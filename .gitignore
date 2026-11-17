@@ -1,0 +1,14 @@
+# Large ortho input data
+ortho-data/
+
+# Generated analysis artifacts
+photo-bridge/outputs/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments
+.venv/
+venv/
