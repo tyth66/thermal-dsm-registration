@@ -41,6 +41,7 @@ class PlanimetricInputs:
     adaptive_field_support: bool = True
     regularized_kernel_m: float | None = None
     regularized_ridge: float = 0.1
+    domain_mode: str = "mode"
     use_observation_covariance: bool = False
     orthogonal_low_frequency: bool = False
     low_frequency_degree: int = 1
@@ -197,7 +198,8 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
     for attempt in range(1, maximum_attempts + 1):
         records, displacement = register(
             visible_high, thermal_high, joint, transform, resolution,
-            tile_m, step_m, inputs.ecc_workers)
+            tile_m, step_m, inputs.ecc_workers,
+            domain_mode=inputs.domain_mode)
         accepted_raw = [record for record in records
                         if record.get("consistent", True)
                         and not record.get("ambiguous", False)]

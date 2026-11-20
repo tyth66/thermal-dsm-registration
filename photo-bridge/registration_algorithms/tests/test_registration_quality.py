@@ -213,3 +213,18 @@ def test_register_returns_empty_for_raster_smaller_than_tile(monkeypatch, capsys
     assert stats["rejected"] == 0
     assert "smaller than one" in capsys.readouterr().out
 
+
+
+def test_mode_domain_rejects_large_alias_cluster():
+    records = [_observation(0.2 + 0.02 * (i % 5), 0.1) for i in range(20)]
+    records += [_observation(5.0, 0.1) for _ in range(8)]
+    records += [_observation(-5.0, 0.1) for _ in range(5)]
+    domain = displacement_domain(records, mode="mode")
+    kept, stats = apply_displacement_domain(records, mode="mode")
+    assert domain["center_dx"] == pytest.approx(0.2, abs=0.1)
+    assert domain["bound_dx"] == pytest.approx(DISPLACEMENT_BOUND_FLOOR_M)
+    kept_pairs = {(round(row["dx_m"], 6), round(row["dy_m"], 6)) for row in kept}
+    assert (0.2, 0.1) in kept_pairs
+    assert (5.0, 0.1) not in kept_pairs
+    assert stats["rejected"] == 13
+

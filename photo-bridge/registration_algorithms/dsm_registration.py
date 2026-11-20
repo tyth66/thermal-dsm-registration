@@ -261,6 +261,35 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     }
 
 
+def _mode_axis_domain(values):
+    """Densest-cluster drift estimate, with the median/MAD estimator as fallback.
+
+    A median/MAD domain can be inflated by a large periodic-alias cluster
+    (the 247 dx observations contain both a near-zero and a +/-5 m mode).
+    The mode estimator centres on the densest histogram bin and takes its
+    local MAD; if the cluster is too small it falls back to median/MAD.
+    """
+    finite = np.asarray([value for value in values if np.isfinite(value)], float)
+    if len(finite) < 8:
+        return _robust_axis_domain(values)
+    low, high = np.percentile(finite, [5.0, 95.0])
+    span = float(high - low)
+    width = max(0.25, min(1.0, span / 12.0)) if span > 0 else 0.5
+    edges = np.arange(float(finite.min()) - width,
+                      float(finite.max()) + 2.0 * width, width)
+    histogram, edges = np.histogram(finite, bins=edges)
+    peak = int(np.argmax(histogram))
+    lower = edges[max(0, peak - 1)]
+    upper = edges[min(len(edges) - 1, peak + 2)]
+    cluster = finite[(finite >= lower) & (finite < upper)]
+    if len(cluster) < max(4, int(round(0.15 * len(finite)))):
+        return _robust_axis_domain(values)
+    center = float(np.median(cluster))
+    scale = 1.4826 * float(np.median(np.abs(cluster - center)))
+    return center, max(DISPLACEMENT_BOUND_FLOOR_M,
+                       DISPLACEMENT_BOUND_SIGMA * scale)
+
+
 def _robust_axis_domain(values):
     """Return (centre, bound) for one displacement axis, self-estimated.
 
@@ -278,17 +307,20 @@ def _robust_axis_domain(values):
                        DISPLACEMENT_BOUND_SIGMA * scale)
 
 
-def displacement_domain(records) -> dict:
+def displacement_domain(records, mode: str = "mad") -> dict:
     """Estimate the per-axis station drift domain from its observations."""
-    center_dx, bound_dx = _robust_axis_domain(
+    if mode not in ("mad", "mode"):
+        raise ValueError("domain mode must be 'mad' or 'mode'")
+    estimator = _mode_axis_domain if mode == "mode" else _robust_axis_domain
+    center_dx, bound_dx = estimator(
         [record["dx_m"] for record in records])
-    center_dy, bound_dy = _robust_axis_domain(
+    center_dy, bound_dy = estimator(
         [record["dy_m"] for record in records])
     return {"center_dx": center_dx, "bound_dx": bound_dx,
             "center_dy": center_dy, "bound_dy": bound_dy}
 
 
-def apply_displacement_domain(records):
+def apply_displacement_domain(records, mode: str = "mad"):
     """Discard observations outside the self-estimated drift domain.
 
     Returns (kept_records, stats); stats carries the estimated per-axis
@@ -300,7 +332,7 @@ def apply_displacement_domain(records):
     records = list(records)
     measured = [record for record in records
                 if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
-    domain = displacement_domain(measured)
+    domain = displacement_domain(measured, mode=mode)
     kept = [record for record in measured
             if (domain["center_dx"] - domain["bound_dx"] <= record["dx_m"]
                 <= domain["center_dx"] + domain["bound_dx"]
@@ -310,14 +342,15 @@ def apply_displacement_domain(records):
 
 
 def register(visible_high, thermal_high, joint, transform, resolution,
-             tile_m: float, step_m: float, workers: int = 1):
+             tile_m: float, step_m: float, workers: int = 1,
+             domain_mode: str = "mad"):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
     if height < tile or width < tile:
         print("register: raster %dx%d is smaller than one %dpx tile; no tiles"
               % (width, height, tile))
-        return apply_displacement_domain([])
+        return apply_displacement_domain([], mode=domain_mode)
     # The +1 makes the final full tile eligible when the usable extent is an
     # exact multiple of the step; without it the last row/column was dropped.
     tasks = [(row, column, top, left)
@@ -336,4 +369,4 @@ def register(visible_high, thermal_high, joint, transform, resolution,
     raw = [record for record in results if record is not None]
     # Second pass: the station drift domain is estimated from every produced
     # observation, then only measurements outside that domain are dropped.
-    return apply_displacement_domain(raw)
+    return apply_displacement_domain(raw, mode=domain_mode)
