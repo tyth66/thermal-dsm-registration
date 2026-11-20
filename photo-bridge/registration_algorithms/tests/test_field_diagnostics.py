@@ -80,3 +80,23 @@ def test_krr_ridge_runs_and_returns_finite_field():
     assert np.all(np.isfinite(delta_e))
     assert np.all(np.isfinite(delta_n))
 
+
+
+def test_soft_low_frequency_penalty_reduces_coupling_without_destroying_field():
+    rows, _, _ = _synthetic_rows()
+    for row in rows:
+        row["dx_m"] += 0.02 * (row["east"] - 20.0) / 20.0
+    query_e = np.linspace(2.0, 38.0, 19)
+    query_n = np.linspace(2.0, 38.0, 19)
+    free = fit_regularized_field(rows, tile_m=10.0, max_distance_m=30.0,
+                                 kernel_length_m=20.0, ridge=0.1)
+    penalized = fit_regularized_field(
+        rows, tile_m=10.0, max_distance_m=30.0, kernel_length_m=20.0,
+        ridge=0.1, low_frequency_penalty=1.0)
+    free_eta = free.low_frequency_coupling(query_e, query_n)["eta"]
+    penalized_eta = penalized.low_frequency_coupling(query_e, query_n)["eta"]
+    assert penalized_eta <= free_eta + 1e-9
+    delta_e, delta_n, _, _ = penalized.evaluate(query_e, query_n)
+    assert np.all(np.isfinite(delta_e))
+    assert np.all(np.isfinite(delta_n))
+

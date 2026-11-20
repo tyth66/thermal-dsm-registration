@@ -45,6 +45,7 @@ class PlanimetricInputs:
     orthogonal_low_frequency: bool = False
     low_frequency_degree: int = 1
     kernel_ridge: str = "coefficient"
+    low_frequency_penalty: float = 0.0
 
 
 PLANIMETRIC_SCALE_PARAMETERS = ("resolution_m", "tile_m", "step_m",
@@ -242,7 +243,8 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         use_observation_covariance=inputs.use_observation_covariance,
         orthogonal_low_frequency=inputs.orthogonal_low_frequency,
         low_frequency_degree=inputs.low_frequency_degree,
-        kernel_ridge=inputs.kernel_ridge)
+        kernel_ridge=inputs.kernel_ridge,
+        low_frequency_penalty=inputs.low_frequency_penalty)
     components = component_shifts(inputs.visible_world["panels"], field)
     return PlanimetricResult(
         field=field, records=tuple(records), accepted=tuple(accepted),

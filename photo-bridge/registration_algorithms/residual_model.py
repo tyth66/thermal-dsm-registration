@@ -195,7 +195,8 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
                           use_observation_covariance: bool = False,
                           orthogonal_low_frequency: bool = False,
                           low_frequency_degree: int = 1,
-                          kernel_ridge: str = "coefficient"):
+                          kernel_ridge: str = "coefficient",
+                          low_frequency_penalty: float = 0.0):
     """Fit global similarity + regularized RBF residual.
 
     The residual model decays to zero outside the tile support, so weak-support
@@ -270,6 +271,12 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
     else:
         normal = kernel.T @ weighted_kernel + float(ridge) * np.eye(len(centers))
         rhs = weighted_kernel.T @ fit_residual
+    if low_frequency_penalty > 0.0 and not orthogonal_low_frequency:
+        basis = _low_frequency_basis(centers, low_frequency_degree)
+        gram = basis.T @ basis
+        projector = basis @ np.linalg.solve(gram, basis.T)
+        low_kernel = projector @ kernel
+        normal = normal + float(low_frequency_penalty) * (low_kernel.T @ low_kernel)
     if orthogonal_low_frequency:
         basis = _low_frequency_basis(centers, low_frequency_degree)
         constraint = basis.T @ (fit_weights[:, None] * kernel)
