@@ -145,12 +145,27 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                 "thermal_alpha": int(corrected_alpha[i]),
                 "corrected_valid": int(corrected_valid[i]),
                 "field_valid": int(bool(field_valid[i])),
+                "source_valid": int(naive_valid[i]),
+                "field_supported": int(bool(field_valid[i])),
+                "target_valid": int(corrected_valid[i]),
                 "residual_applied": 1,
                 "field_weight": float(weight[i]), "nearest_tile_m": float(nearest[i]),
             })
         component_mapped = bool(np.any(naive_valid[start:end]))
+        center_row = next((row for row in panel_rows if row["point"] == "center"),
+                          panel_rows[0])
+        corner_supported = sum(row["field_supported"] for row in panel_rows
+                               if row["point"] != "center")
+        component_field_supported = bool(center_row["field_supported"]
+                                         and corner_supported >= 3)
+        component_target_valid = bool(sum(row["target_valid"] for row in panel_rows) >= 3)
         for row in panel_rows:
             row["valid"] = int(component_mapped)
+            row["component_source_valid"] = int(component_mapped)
+            row["component_field_supported"] = int(component_field_supported)
+            row["component_target_valid"] = int(component_target_valid)
+            row["low_confidence"] = int(not (component_field_supported
+                                             and component_target_valid))
         rows.extend(panel_rows)
     return rows
 
