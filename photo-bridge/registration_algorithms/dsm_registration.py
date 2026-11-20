@@ -261,6 +261,40 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     }
 
 
+def _joint_mode_domain(records):
+    """Two-dimensional densest-cluster domain, used as an opt-in diagnostic.
+
+    Per-axis modes can combine two different 2D clusters.  This estimator
+    selects the densest 2D bin (plus its 3x3 neighbourhood), centres on that
+    cluster, and returns a circular radius.  It returns None when the cluster
+    is too small, letting the caller fall back to the per-axis mode.
+    """
+    valid = [(float(record["dx_m"]), float(record["dy_m"])) for record in records
+             if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
+    if len(valid) < 8:
+        return None
+    values = np.asarray(valid, float)
+    x, y = values[:, 0], values[:, 1]
+    span = float(np.hypot(np.ptp(x), np.ptp(y)))
+    width = max(0.5, min(1.0, span / 20.0))
+    x_edges = np.arange(float(x.min()) - width, float(x.max()) + 2 * width, width)
+    y_edges = np.arange(float(y.min()) - width, float(y.max()) + 2 * width, width)
+    histogram, x_edges, y_edges = np.histogram2d(x, y, bins=[x_edges, y_edges])
+    ix, iy = np.unravel_index(int(np.argmax(histogram)), histogram.shape)
+    cluster = ((x >= x_edges[max(0, ix - 1)]) & (x < x_edges[min(len(x_edges) - 1, ix + 2)])
+               & (y >= y_edges[max(0, iy - 1)]) & (y < y_edges[min(len(y_edges) - 1, iy + 2)]))
+    if cluster.sum() < max(4, int(round(0.15 * len(values)))):
+        return None
+    center_x = float(np.median(x[cluster]))
+    center_y = float(np.median(y[cluster]))
+    radial = np.hypot(x[cluster] - center_x, y[cluster] - center_y)
+    scale = 1.4826 * float(np.median(np.abs(radial - np.median(radial))))
+    radius = max(DISPLACEMENT_BOUND_FLOOR_M, DISPLACEMENT_BOUND_SIGMA * scale)
+    return {"center_dx": center_x, "center_dy": center_y,
+            "bound_dx": radius, "bound_dy": radius,
+            "joint": True, "radius_m": radius}
+
+
 def _mode_axis_domain(values):
     """Densest-cluster drift estimate, with the median/MAD estimator as fallback.
 
@@ -309,8 +343,13 @@ def _robust_axis_domain(values):
 
 def displacement_domain(records, mode: str = "mad") -> dict:
     """Estimate the per-axis station drift domain from its observations."""
-    if mode not in ("mad", "mode"):
-        raise ValueError("domain mode must be 'mad' or 'mode'")
+    if mode not in ("mad", "mode", "joint"):
+        raise ValueError("domain mode must be 'mad', 'mode' or 'joint'")
+    if mode == "joint":
+        joint = _joint_mode_domain(records)
+        if joint is not None:
+            return joint
+        mode = "mode"
     estimator = _mode_axis_domain if mode == "mode" else _robust_axis_domain
     center_dx, bound_dx = estimator(
         [record["dx_m"] for record in records])
@@ -333,11 +372,17 @@ def apply_displacement_domain(records, mode: str = "mad"):
     measured = [record for record in records
                 if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
     domain = displacement_domain(measured, mode=mode)
-    kept = [record for record in measured
-            if (domain["center_dx"] - domain["bound_dx"] <= record["dx_m"]
-                <= domain["center_dx"] + domain["bound_dx"]
-                and domain["center_dy"] - domain["bound_dy"] <= record["dy_m"]
-                <= domain["center_dy"] + domain["bound_dy"])]
+    if domain.get("joint"):
+        kept = [record for record in measured
+                if np.hypot(record["dx_m"] - domain["center_dx"],
+                            record["dy_m"] - domain["center_dy"])
+                <= domain["radius_m"]]
+    else:
+        kept = [record for record in measured
+                if (domain["center_dx"] - domain["bound_dx"] <= record["dx_m"]
+                    <= domain["center_dx"] + domain["bound_dx"]
+                    and domain["center_dy"] - domain["bound_dy"] <= record["dy_m"]
+                    <= domain["center_dy"] + domain["bound_dy"])]
     return kept, {**domain, "rejected": len(records) - len(kept)}
 
 
