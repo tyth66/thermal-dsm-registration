@@ -42,6 +42,9 @@ class PlanimetricInputs:
     regularized_kernel_m: float | None = None
     regularized_ridge: float = 0.1
     use_observation_covariance: bool = False
+    orthogonal_low_frequency: bool = False
+    low_frequency_degree: int = 1
+    kernel_ridge: str = "coefficient"
 
 
 PLANIMETRIC_SCALE_PARAMETERS = ("resolution_m", "tile_m", "step_m",
@@ -236,7 +239,10 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         max_distance_m=field_support.max_distance_m,
         kernel_length_m=inputs.regularized_kernel_m,
         ridge=inputs.regularized_ridge,
-        use_observation_covariance=inputs.use_observation_covariance)
+        use_observation_covariance=inputs.use_observation_covariance,
+        orthogonal_low_frequency=inputs.orthogonal_low_frequency,
+        low_frequency_degree=inputs.low_frequency_degree,
+        kernel_ridge=inputs.kernel_ridge)
     components = component_shifts(inputs.visible_world["panels"], field)
     return PlanimetricResult(
         field=field, records=tuple(records), accepted=tuple(accepted),

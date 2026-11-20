@@ -174,12 +174,28 @@ def _weighted_similarity_covariance(east, north, target_east, target_north,
     return matrix, translation, inliers
 
 
+def _low_frequency_basis(centers: np.ndarray, degree: int = 1) -> np.ndarray:
+    """Constant + linear (and optionally quadratic) normalized coordinates."""
+    center = np.mean(centers, axis=0)
+    scale = np.maximum(np.std(centers, axis=0), 1e-9)
+    normalized = (centers - center) / scale
+    columns = [np.ones(len(centers)), normalized[:, 0], normalized[:, 1]]
+    if degree >= 2:
+        columns.extend([normalized[:, 0] ** 2,
+                        normalized[:, 0] * normalized[:, 1],
+                        normalized[:, 1] ** 2])
+    return np.column_stack(columns)
+
+
 def fit_regularized_field(rows: Iterable[dict], tile_m: float,
                           max_distance_m: float = 30.0,
                           kernel_length_m: float | None = None,
                           ridge: float = 0.1,
                           support_weighting: bool = True,
-                          use_observation_covariance: bool = False):
+                          use_observation_covariance: bool = False,
+                          orthogonal_low_frequency: bool = False,
+                          low_frequency_degree: int = 1,
+                          kernel_ridge: str = "coefficient"):
     """Fit global similarity + regularized RBF residual.
 
     The residual model decays to zero outside the tile support, so weak-support
@@ -246,8 +262,29 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
                          centers[:, None, 1] - centers[None, :, 1])
     kernel = np.exp(-0.5 * (distances / kernel_length_m) ** 2)
     weighted_kernel = kernel * fit_weights[:, None]
-    normal = kernel.T @ weighted_kernel + float(ridge) * np.eye(len(centers))
-    coefficients = np.linalg.solve(normal, weighted_kernel.T @ fit_residual)
+    if kernel_ridge not in ("coefficient", "krr"):
+        raise ValueError("kernel_ridge must be 'coefficient' or 'krr'")
+    if kernel_ridge == "krr":
+        normal = fit_weights[:, None] * kernel + float(ridge) * np.eye(len(centers))
+        rhs = fit_weights[:, None] * fit_residual
+    else:
+        normal = kernel.T @ weighted_kernel + float(ridge) * np.eye(len(centers))
+        rhs = weighted_kernel.T @ fit_residual
+    if orthogonal_low_frequency:
+        basis = _low_frequency_basis(centers, low_frequency_degree)
+        constraint = basis.T @ (fit_weights[:, None] * kernel)
+        count = constraint.shape[0]
+        size = len(centers)
+        system = np.zeros((size + count, size + count), float)
+        system[:size, :size] = normal
+        system[:size, size:] = constraint.T
+        system[size:, :size] = constraint
+        augmented_rhs = np.zeros((size + count, 2), float)
+        augmented_rhs[:size] = rhs
+        solution = np.linalg.solve(system, augmented_rhs)
+        coefficients = solution[:size]
+    else:
+        coefficients = np.linalg.solve(normal, rhs)
     tiles = [{
         "east": float(east[i]), "north": float(north[i]), "cc": float(cc[i]),
         "residual_e": float(residual[i, 0]), "residual_n": float(residual[i, 1]),
