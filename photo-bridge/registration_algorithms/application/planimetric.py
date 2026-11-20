@@ -5,10 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..dsm_registration import (
-    cross_validate, cross_validate_spatial, highpass, load_grid, register,
-    reject_outliers,
-)
+from ..dsm_registration import highpass, load_grid, register
 from ..residual_model import fit_regularized_field
 from ..vertical_estimation import component_shifts
 
@@ -17,8 +14,12 @@ MINIMUM_ACCEPTED_TILES = 6
 MAXIMUM_TILING_ATTEMPTS = 3
 # Empirically derived from the 141/277 baseline: 40 m tile / 202 m short overlap.
 TARGET_TILE_SHORT_RATIO = 0.20
-# Field support scales with the short overlap edge. The baseline uses a 30 m
-# support distance on a 202 m short edge (0.15).
+# Field support ratio: 0.30 is the CONFIRMED design ratio (not 0.15). The
+# adaptive formula is max_distance = min(30, max(10, 0.30 * short_edge)), so
+# adaptation only bites when 0.30 * short_edge < 30 m, i.e. short_edge < 100 m.
+# Stations whose short edge is 100-202 m are capped by the 30 m ceiling; the
+# 141/277 baseline (202 m short edge) therefore uses 30 m. The 10 m floor covers
+# very small overlaps where the ratio alone would shrink support below 10 m.
 TARGET_FIELD_MAX_DISTANCE_SHORT_RATIO = 0.30
 MIN_FIELD_MAX_DISTANCE_M = 10.0
 MAX_FIELD_MAX_DISTANCE_M = 30.0
@@ -33,8 +34,6 @@ class PlanimetricInputs:
     tile_m: float = 40.0
     step_m: float = 20.0
     highpass_sigma_m: float = 1.5
-    min_cc: float = 0.5
-    max_shift_m: float = 1.5
     field_max_distance_m: float = 30.0
     warp_threads: int = 8
     ecc_workers: int = 8
@@ -42,6 +41,21 @@ class PlanimetricInputs:
     adaptive_field_support: bool = True
     regularized_kernel_m: float | None = None
     regularized_ridge: float = 0.1
+
+
+PLANIMETRIC_SCALE_PARAMETERS = ("resolution_m", "tile_m", "step_m",
+                                "highpass_sigma_m", "field_max_distance_m")
+
+
+def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
+    """Reject non-positive scale parameters before any DSM work starts.
+
+    "not value > 0" is used instead of "value <= 0" so NaN is rejected too;
+    each error names the offending field.
+    """
+    for name in PLANIMETRIC_SCALE_PARAMETERS:
+        if not getattr(inputs, name) > 0:
+            raise ValueError("%s must be positive" % name)
 
 
 @dataclass(frozen=True)
@@ -71,9 +85,6 @@ class PlanimetricResult:
     accepted: tuple[dict, ...]
     components: tuple[dict, ...]
     outliers: int
-    cv_checker: Mapping[str, Any]
-    cv_quadrant: Mapping[str, Any]
-    cv_block: Mapping[str, Any]
     joint_shape: tuple[int, int]
     overlap_extent_m: tuple[float, float]
     tiling: TilingPlan
@@ -85,11 +96,13 @@ def adaptive_field_support(overlap_width_m: float,
                            overlap_height_m: float,
                            requested_max_distance_m: float,
                            adaptive: bool = True) -> FieldSupportPlan:
-    """Scale IDW radius/support distance with the short overlap edge.
+    """Scale the field support distance with the short overlap edge.
 
-    The 141/277 baseline is the reference: 90 m radius and 30 m support on a
-    202 m short edge. Small stations otherwise inherit parameters that cover
-    their whole DSM overlap, which turns IDW into a near-global correction.
+    max_distance = min(30, max(10, 0.30 * short_edge)). The 0.30 ratio is the
+    confirmed design value: adaptation only takes effect below a 100 m short
+    edge, while the 141/277 baseline (202 m) sits at the 30 m cap. Without the
+    ratio, small stations would inherit a support distance covering their whole
+    DSM overlap, which turns the field correction near-global.
     """
     if overlap_width_m <= 0 or overlap_height_m <= 0:
         raise ValueError("empty DSM overlap extent")
@@ -146,6 +159,7 @@ def adaptive_tiling(overlap_width_m: float, overlap_height_m: float,
 
 
 def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
+    validate_planimetric_inputs(inputs)
     resolution = inputs.resolution_m
     visible_z, visible_valid, thermal_z, thermal_valid, transform, _ = load_grid(
         inputs.visible_dsm, inputs.thermal_dsm, resolution, inputs.warp_threads)
@@ -176,15 +190,25 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
     best = None
     tile_m, step_m = plan.tile_m, plan.step_m
     for attempt in range(1, maximum_attempts + 1):
-        records = register(visible_high, thermal_high, joint, transform,
-                           resolution, tile_m, step_m, inputs.min_cc,
-                           inputs.max_shift_m, inputs.ecc_workers)
-        accepted_raw = [record for record in records if record["accepted"]]
+        records, displacement = register(
+            visible_high, thermal_high, joint, transform, resolution,
+            tile_m, step_m, inputs.ecc_workers)
+        accepted_raw = [record for record in records
+                        if record.get("consistent", True)
+                        and not record.get("ambiguous", False)]
         attempts.append({
             "attempt": attempt, "tile_m": tile_m, "step_m": step_m,
             "tile_px": int(round(tile_m / resolution)),
             "step_px": int(round(step_m / resolution)),
             "records": len(records), "accepted": len(accepted_raw),
+            "ambiguous": sum(bool(record.get("ambiguous", False))
+                             for record in records),
+            "inconsistent": sum(not record.get("consistent", True)
+                                for record in records),
+            "invalid_displacements": displacement["rejected"],
+            "displacement_domain_m": {
+                key: displacement[key]
+                for key in ("center_dx", "bound_dx", "center_dy", "bound_dy")},
         })
         if best is None or len(accepted_raw) > len(best[0]):
             best = (accepted_raw, records, tile_m, step_m)
@@ -197,40 +221,24 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
 
     if best is None or not best[0]:
         raise ValueError(
-            "no accepted DSM tiles; overlap=({:.1f} x {:.1f} m), "
-            "tile=({:.2f}..{:.2f} m), attempts={}".format(
+            "no usable DSM tiles after consistency/ambiguity filtering; "
+            "overlap=({:.1f} x {:.1f} m), tile=({:.2f}..{:.2f} m), "
+            "attempts={}".format(
                 overlap_width_m, overlap_height_m, plan.tile_m, tile_m, attempts))
     accepted_raw, records, tile_m, step_m = best
-    outliers = reject_outliers(records)
-    accepted = [record for record in records
-                if record["accepted"] and not record["outlier"]]
+    accepted = list(accepted_raw)
+    outliers = len(records) - len(accepted)
     if not accepted:
-        raise ValueError("all accepted DSM tiles were rejected as outliers")
+        raise ValueError("no usable DSM tiles produced a finite registration")
     field = fit_regularized_field(
         accepted, tile_m=tile_m,
         max_distance_m=field_support.max_distance_m,
         kernel_length_m=inputs.regularized_kernel_m,
         ridge=inputs.regularized_ridge)
-    cv_checker = cross_validate(
-        records, "checkerboard", tile_m=tile_m,
-        max_distance_m=field.max_distance_m,
-        kernel_length_m=field.kernel_length_m,
-        ridge=inputs.regularized_ridge)
-    cv_quadrant = cross_validate(
-        records, "quadrant", tile_m=tile_m,
-        max_distance_m=field.max_distance_m,
-        kernel_length_m=field.kernel_length_m,
-        ridge=inputs.regularized_ridge)
     components = component_shifts(inputs.visible_world["panels"], field)
-    cv_block = cross_validate_spatial(
-        records, tile_m=tile_m,
-        max_distance_m=field.max_distance_m,
-        kernel_length_m=field.kernel_length_m,
-        ridge=inputs.regularized_ridge)
     return PlanimetricResult(
         field=field, records=tuple(records), accepted=tuple(accepted),
         components=tuple(components), outliers=outliers,
-        cv_checker=cv_checker, cv_quadrant=cv_quadrant, cv_block=cv_block,
         joint_shape=tuple(joint.shape),
         overlap_extent_m=(overlap_width_m, overlap_height_m),
         field_support=field_support,

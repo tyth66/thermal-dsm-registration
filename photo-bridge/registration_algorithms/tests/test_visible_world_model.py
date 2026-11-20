@@ -7,7 +7,24 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from registration_algorithms.visible_world_model import build_visible_world_model
+from registration_algorithms.visible_world_model import build_visible_world_model, _corners
+
+
+def test_corners_use_ems_rotation_without_mirroring():
+    import math
+    res = 0.01
+    transform = from_origin(600000.0, 3200000.0, res, res)
+    panel = {"id": "p", "x": 1000.0, "y": 500.0, "width": 100.0,
+             "height": 10.0, "rotation": 30.0}
+    en = _corners(panel, transform)
+    long_axis = en[0] - en[1]
+    expected = 100.0 * np.array([math.cos(math.radians(30.0)) * res,
+                                 -math.sin(math.radians(30.0)) * res])
+    assert np.allclose(long_axis, expected, atol=1e-9)
+    cross_axis = en[1] - en[2]
+    expected_cross = 10.0 * np.array([-math.sin(math.radians(30.0)) * res,
+                                       -math.cos(math.radians(30.0)) * res])
+    assert np.allclose(cross_axis, expected_cross, atol=1e-9)
 
 
 def test_build_visible_world_model_from_panels_and_dsm(tmp_path):
@@ -35,3 +52,15 @@ def test_build_visible_world_model_from_panels_and_dsm(tmp_path):
     assert set(model["surfaces"]) == {"a0"}
     assert all(panel["z_source"] == "m0_plane" for panel in model["panels"])
     assert all(abs(panel["center_xyz"][2] - 25.0) < 1e-6 for panel in model["panels"])
+    # A fitted plane is used without any quality verdict: the old
+    # quality_status / gate / holdout evidence keys are gone from the artifact.
+    surface = model["surfaces"]["a0"]
+    assert surface["plane"] is not None
+    for removed in ("quality_status", "quality_scope", "gate", "holdout_metrics"):
+        assert removed not in surface
+    quality = model["panel_quality"]["p0"]
+    assert quality["z_source"] == "m0_plane"
+    assert quality["dsm_median_z"] == 25.0
+    for removed in ("quality_status", "surface_failure_reason", "model_valid",
+                    "z_reason", "dsm_sample_usable"):
+        assert removed not in quality

@@ -143,22 +143,27 @@ def _render_axis(axis, image, alpha, panels, array_of_panel, prefix,
 
 def _panel_bbox(panels, prefix, scale, image_width, image_height,
                 margin_ratio=0.025):
+    """Clipped pixel bbox of the finite panel corners (full image when empty)."""
     xs = []
     ys = []
     for panel in panels:
         for point in panel["corners"]:
             try:
-                xs.append(float(point[prefix + "_u"]) * scale)
-                ys.append(float(point[prefix + "_v"]) * scale)
+                x = float(point[prefix + "_u"]) * scale
+                y = float(point[prefix + "_v"]) * scale
             except (KeyError, TypeError, ValueError):
                 continue
+            if not (np.isfinite(x) and np.isfinite(y)):
+                continue
+            xs.append(x)
+            ys.append(y)
     if not xs:
         return 0, 0, image_width, image_height
     x0, x1 = min(xs), max(xs)
     y0, y1 = min(ys), max(ys)
     pad = max(x1 - x0, y1 - y0) * margin_ratio
-    x0 = max(0, int(np.floor(x0 - pad)))
-    y0 = max(0, int(np.floor(y0 - pad)))
+    x0 = min(max(0, int(np.floor(x0 - pad))), image_width - 1)
+    y0 = min(max(0, int(np.floor(y0 - pad))), image_height - 1)
     x1 = min(image_width, int(np.ceil(x1 + pad)))
     y1 = min(image_height, int(np.ceil(y1 + pad)))
     return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
@@ -181,7 +186,8 @@ def _add_scale_bar(axis, width, height, meters_per_pixel, rendered_width,
               color="white", ha="center", va="bottom", fontsize=9)
 
 
-def _thermal_metadata(path):
+def _raster_metadata(path):
+    """Ground resolution (m/px) and pixel dimensions of a raster."""
     with rasterio.open(path) as dataset:
         return abs(dataset.transform.a), dataset.width, dataset.height
 
@@ -193,8 +199,8 @@ def render(args):
         panels = _panels_from_json(args.result_json)
     else:
         panels = _panels_from_csv(args.panel_csv)
-    thermal_resolution, thermal_width, thermal_height = _thermal_metadata(
-        args.thermal_ortho)
+    thermal_resolution, thermal_width, _ = _raster_metadata(args.thermal_ortho)
+    _, visible_width, _ = _raster_metadata(args.visible_ortho)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     station = args.station_name
@@ -242,7 +248,7 @@ def render(args):
         args.visible_ortho, side_width)
     thermal_rgb2, thermal_alpha2, thermal_h2, _ = _read_image(
         args.thermal_ortho, side_width)
-    visible_scale = side_width / args.visible_width
+    visible_scale = side_width / visible_width
     thermal_side_scale = side_width / thermal_width
     visible_bbox = _panel_bbox(panels, "visible", visible_scale,
                                side_width, visible_h)
@@ -287,7 +293,6 @@ def main(argv=None):
     parser.add_argument("--station-name", required=True)
     parser.add_argument("--thermal-ortho", type=Path, required=True)
     parser.add_argument("--visible-ortho", type=Path, required=True)
-    parser.add_argument("--visible-width", type=int, required=True)
     parser.add_argument("--world-model", type=Path, required=True)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--panel-csv", type=Path)

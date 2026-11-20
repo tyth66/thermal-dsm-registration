@@ -1,19 +1,14 @@
-"""One footprint mask supplies both height summaries and plane-fit samples."""
+"""One footprint mask supplies both height summaries and point samples."""
 import numpy as np
 import pytest
 import rasterio
 from affine import Affine
 
 from registration_algorithms.dsm_sampling import sample_footprint
-from registration_algorithms.application import geometry as geometry_module
-from registration_algorithms.panel_thermal_model import sample_polygon_pixels
 
 
-def _geometry_sampler():
-    return geometry_module._samples
-
-
-def test_erosion_radius_and_mask_are_identical_across_stages(tmp_path):
+def test_footprint_summary_and_samples_share_one_mask(tmp_path):
+    """The height summary and include_samples come from one mask/erosion."""
     path = tmp_path / "dsm.tif"
     values = np.full((16, 16), 20, np.float32)
     values[4, 4] = np.nan
@@ -30,13 +25,14 @@ def test_erosion_radius_and_mask_are_identical_across_stages(tmp_path):
         summary = sample_footprint(ds, corners, 1.)
         assert summary["total_pixels"] == 49
         assert summary["valid_pixels"] == 45
-        for sampler in (sample_polygon_pixels, _geometry_sampler()):
-            east, north, z = sampler(ds, corners, 1., minimum_pixels=1)
-            assert len(z) == summary["valid_pixels"]
-            assert east.min() == 3.5 and east.max() == 9.5
-            assert north.min() == 3.5 and north.max() == 9.5
-            assert np.median(z) == summary["median_z"]
-            assert sampler(ds, corners, 1., minimum_pixels=46) is None
+        detail = sample_footprint(ds, corners, 1., include_samples=True)
+        assert {key: value for key, value in detail.items()
+                if key != "samples"} == summary
+        east, north, z = detail["samples"]
+        assert len(z) == summary["valid_pixels"]
+        assert east.min() == 3.5 and east.max() == 9.5
+        assert north.min() == 3.5 and north.max() == 9.5
+        assert np.median(z) == summary["median_z"]
 
 
 @pytest.mark.parametrize("erode_m", [0., .35, 5.])
@@ -62,6 +58,25 @@ def test_sample_coordinates_share_summary_for_rotated_anisotropic_raster(tmp_pat
         np.testing.assert_allclose(row % 1,.5,atol=1e-7)
         np.testing.assert_array_equal(z,values[np.floor(row).astype(int),np.floor(col).astype(int)])
         assert np.median(z)==summary['median_z']
+
+
+def test_pixel_center_corners_cover_exactly_the_square(tmp_path):
+    """A square whose corners sit on pixel centers covers exactly those pixels.
+
+    rasterio pixel i is centred at i + 0.5 while cv2 pixel i is centred at i;
+    without the half-pixel shift the rasterized footprint grew by one pixel per
+    side (25 instead of 16 here).
+    """
+    path = tmp_path / "centers.tif"
+    with rasterio.open(path, "w", driver="GTiff", width=12, height=12, count=1,
+                       dtype="float32", transform=Affine.identity()) as ds:
+        ds.write(np.full((12, 12), 20.0, np.float32), 1)
+    # Corners on the centers of raster pixels 2..5: 4x4 = 16 pixels.
+    corners = np.array([[2.5, 2.5], [5.5, 2.5], [5.5, 5.5], [2.5, 5.5]], float)
+    with rasterio.open(path) as ds:
+        result = sample_footprint(ds, corners, 0.0)
+    assert result["total_pixels"] == 16
+    assert result["valid_pixels"] == 16
 
 
 def test_outside_footprint_has_empty_samples(tmp_path):

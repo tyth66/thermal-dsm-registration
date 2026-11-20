@@ -1,12 +1,10 @@
-"""Canonical 3D residual model: planimetric field + vertical panel planes."""
+"""Planimetric field: global similarity + regularized RBF residual."""
 from __future__ import annotations
 
 from typing import Iterable
 
 import numpy as np
 from scipy.spatial import cKDTree
-
-from .local_plane import LocalPlane, plane_from_row
 
 
 def field_support_mask(delta_e, delta_n, weight, nearest, max_distance_m):
@@ -27,8 +25,12 @@ class PlanimetricField:
         return RegularizedPlanimetricField.from_model(model)
 
     @classmethod
-    def from_tiles(cls, rows, radius: float = 90.0, power: float = 2.0,
-                   max_distance_m: float = 30.0):
+    def from_tiles(cls, rows, max_distance_m: float = 30.0):
+        """Fit a field from tile rows by delegating to fit_regularized_field.
+
+        Empty rows produce the empty field: identity similarity with no
+        residual support.
+        """
         rows = list(rows)
         if not rows:
             return RegularizedPlanimetricField.empty(max_distance_m)
@@ -37,11 +39,6 @@ class PlanimetricField:
 
     def evaluate(self, east, north):
         raise NotImplementedError
-
-    def map_points(self, points: np.ndarray) -> np.ndarray:
-        points = np.asarray(points, float)
-        dx, dy, _, _ = self.evaluate(points[:, 0], points[:, 1])
-        return points + np.column_stack([dx, dy])
 
     def supports_points(self, points: np.ndarray) -> np.ndarray:
         points = np.asarray(points, float)
@@ -114,9 +111,12 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
     target_east = east + np.asarray([float(row["dx_m"]) for row in rows], float)
     target_north = north + np.asarray([float(row["dy_m"]) for row in rows], float)
     cc = np.asarray([float(row["cc"]) for row in rows], float)
-    cc = np.where(np.isfinite(cc) & (cc > 0), cc, 1.0)
+    # A non-finite or non-positive correlation is the least trustworthy
+    # observation, not the most: floor it at the minimum weight instead of
+    # replacing it with the maximum (1.0).  clip also bounds finite values.
+    cc = np.clip(np.where(np.isfinite(cc), cc, 1e-3), 1e-3, 1.0)
     quality = np.asarray([float(row.get("quality_weight", 1.0)) for row in rows], float)
-    quality = np.where(np.isfinite(quality) & (quality > 0), quality, 1.0)
+    quality = np.clip(np.where(np.isfinite(quality), quality, 1e-3), 1e-3, 1.0)
     cc = cc * quality
     tree = cKDTree(np.column_stack([east, north]))
     if len(rows) > 1:
@@ -264,75 +264,4 @@ class RegularizedPlanimetricField(PlanimetricField):
         return delta[:, 0], delta[:, 1], density
 
 
-def vertical_model(panels: Iterable[dict], geometry: dict[str, dict],
-                   thermal_panels: dict[str, dict]) -> dict:
-    model = {}
-    for panel in panels:
-        panel_id = panel["panel_id"]
-        visible = plane_from_row(geometry.get(panel_id, {}), "visible_plane")
-        visible_plane = None if visible is None else visible.to_dict()
-        thermal_panel = thermal_panels.get(panel_id, {})
-        thermal = thermal_panel.get("panel_plane")
-        thermal_plane = None if thermal is None else LocalPlane.from_model(thermal).to_dict()
-        model[panel_id] = {
-            "array_id": str(panel["array_id"]),
-            "visible_plane": visible_plane,
-            "thermal_plane": thermal_plane,
-            "thermal_correction_method": thermal_panel.get("vertical_correction_method", "array_bias"),
-        }
-    return model
 
-
-def panels_from_model(vertical: dict) -> dict[str, dict]:
-    panels = {}
-    for panel_id, row in vertical.items():
-        visible_plane = (None if row.get("visible_plane") is None
-                         else LocalPlane.from_model(row["visible_plane"]))
-        thermal_plane = (None if row.get("thermal_plane") is None
-                         else LocalPlane.from_model(row["thermal_plane"]))
-        panels[panel_id] = {"visible_plane": visible_plane,
-                            "thermal_plane": thermal_plane,
-                            "thermal_correction_method": row.get("thermal_correction_method", "array_bias"),
-                            "array_id": row.get("array_id")}
-    return panels
-
-
-def validate_residual_model(model: dict) -> None:
-    """Validate the canonical residual model structure."""
-    if not isinstance(model, dict):
-        raise ValueError("residual model must be an object")
-    planimetric = model.get("planimetric")
-    vertical = model.get("vertical")
-    if not isinstance(planimetric, dict) or not isinstance(vertical, dict):
-        raise ValueError("residual model requires planimetric and vertical objects")
-    panels = vertical.get("panels")
-    if not isinstance(panels, dict):
-        raise ValueError("vertical.panels must be an object")
-    for panel_id, row in panels.items():
-        if not isinstance(row, dict):
-            raise ValueError("panel %s must be an object" % panel_id)
-        for key in ("visible_plane", "thermal_plane"):
-            plane = row.get(key)
-            if plane is not None:
-                try:
-                    LocalPlane.from_model(plane)
-                except (ValueError, TypeError, KeyError) as exc:
-                    raise ValueError("panel %s %s has invalid plane: %s" % (panel_id, key, exc)) from exc
-    if planimetric.get("type") != REGULARIZED_FIELD_TYPE:
-        raise ValueError("unsupported planimetric type: %s" % planimetric.get("type"))
-    similarity = planimetric.get("similarity")
-    residual = planimetric.get("residual")
-    if not isinstance(similarity, dict) or not isinstance(residual, dict):
-        raise ValueError("regularized planimetric model requires similarity and residual")
-    if np.asarray(similarity.get("matrix")).shape != (2, 2):
-        raise ValueError("similarity.matrix must be 2x2")
-    if np.asarray(similarity.get("translation")).shape != (2,):
-        raise ValueError("similarity.translation must have two values")
-    if len(residual.get("centers", [])) != len(residual.get("weights", [])):
-        raise ValueError("residual centers/weights length mismatch")
-    if len(residual.get("coefficients_e", [])) != len(residual.get("centers", [])):
-        raise ValueError("residual coefficients_e length mismatch")
-    if len(residual.get("coefficients_n", [])) != len(residual.get("centers", [])):
-        raise ValueError("residual coefficients_n length mismatch")
-    if not isinstance(residual.get("tiles"), list):
-        raise ValueError("residual.tiles must be a list")

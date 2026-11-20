@@ -10,10 +10,12 @@ import math
 
 import numpy as np
 import cv2
+from rasterio.enums import Resampling
 from rasterio.windows import Window
 
 MIN_ELEVATION_M = -100.0
 MAX_ELEVATION_M = 80.0
+LEGACY_ELEVATION_RANGE_M = (MIN_ELEVATION_M, MAX_ELEVATION_M)
 
 
 def window_for_points(points: np.ndarray, inverse, width: int,
@@ -41,19 +43,60 @@ def dsm_pixels(ds, window: Window):
     return data, valid
 
 
+def elevation_range_for(ds, *, subsample_max_px: int = 512,
+                        interior_margin_m: float = 20.0,
+                        half_span_m: float = 90.0) -> tuple[float, float]:
+    """Usable elevation window for one DSM, recentred on out-of-band sites.
+
+    The legacy fixed window (MIN_ELEVATION_M, MAX_ELEVATION_M) was calibrated
+    for near-sea-level stations. A site whose elevations sit outside it (for
+    example a high-altitude plant above ~60 m) had every DSM sample rejected:
+    footprint sampling returned no usable pixels, tile registration failed with
+    "no accepted DSM tiles" or all panels came back sample_usable=False, and
+    nothing in the diagnostics pointed at the elevation window as the cause.
+    This helper inspects the raster itself instead: band 1 is subsampled with
+    average resampling and validated against its nearest-resampled mask, and
+    when the valid-elevation median stays inside the legacy interior (both
+    edges minus interior_margin_m) the legacy window is returned unchanged,
+    bit-for-bit identical to the previous behaviour. Otherwise the window is
+    recentred on the median with half_span_m so the site's own elevations
+    remain usable. An all-nodata raster falls back to the legacy window.
+    """
+    subsample_max_px = int(subsample_max_px)
+    height = max(1, min(subsample_max_px, int(ds.height)))
+    width = max(1, min(subsample_max_px, int(ds.width)))
+    data = ds.read(1, out_shape=(height, width), resampling=Resampling.average)
+    masks = ds.read_masks(1, out_shape=(height, width),
+                          resampling=Resampling.nearest)
+    valid = (masks > 0) & np.isfinite(data)
+    if not valid.any():
+        return (float(LEGACY_ELEVATION_RANGE_M[0]),
+                float(LEGACY_ELEVATION_RANGE_M[1]))
+    median = float(np.median(data[valid]))
+    if (LEGACY_ELEVATION_RANGE_M[0] + float(interior_margin_m) <= median
+            <= LEGACY_ELEVATION_RANGE_M[1] - float(interior_margin_m)):
+        return (float(LEGACY_ELEVATION_RANGE_M[0]),
+                float(LEGACY_ELEVATION_RANGE_M[1]))
+    return (median - float(half_span_m), median + float(half_span_m))
+
+
 def sample_footprint(ds, corners: np.ndarray, erode_m: float, *,
-                     include_samples: bool = False) -> dict:
+                     include_samples: bool = False,
+                     elevation_range: tuple[float, float] | None = None) -> dict:
     """Sample a polygon interior after a fixed metric elliptical erosion.
 
     Returns median/MAD of valid elevations plus pixel-support statistics. The
-    elevation range is the legacy visible-side range (-100, 80) m; callers that
-    need another range must filter afterwards.
+    usable elevation window is the legacy visible-side range (-100, 80) m
+    unless elevation_range passes an explicit (lo, hi) window, e.g. one
+    obtained from elevation_range_for for sites outside the legacy band.
     With include_samples, samples contains aligned E/N/Z arrays from exactly
     the same usable mask; E/N are world coordinates of pixel centers.
     """
     corners = np.asarray(corners, dtype=float).reshape(4, 2)
     if not np.isfinite(corners).all() or not math.isfinite(float(erode_m)) or erode_m < 0:
         raise ValueError("corners must be finite and erode_m nonnegative")
+    lo, hi = (LEGACY_ELEVATION_RANGE_M if elevation_range is None
+              else elevation_range)
     window = window_for_points(corners, ~ds.transform, ds.width, ds.height)
     if window is None:
         result = {"median_z": None, "mad_z": None, "valid_pixels": 0,
@@ -63,7 +106,11 @@ def sample_footprint(ds, corners: np.ndarray, erode_m: float, *,
         return result
     values, valid = dsm_pixels(ds, window)
     pixel_corners = np.asarray([~ds.transform @ (float(e), float(n)) for e, n in corners])
-    local = np.rint(pixel_corners - [window.col_off, window.row_off]).astype(np.int32)
+    # rasterio pixel i is centred at i + 0.5 while cv2 pixel i is centred at
+    # i, so shift the local polygon by half a pixel before rasterizing.  Without
+    # it every footprint grew by one pixel per side.
+    local = np.rint(pixel_corners - 0.5
+                    - [window.col_off, window.row_off]).astype(np.int32)
     mask = np.zeros(values.shape, dtype=np.uint8)
     cv2.fillPoly(mask, [local.reshape(-1, 1, 2)], 1)
 
@@ -81,7 +128,7 @@ def sample_footprint(ds, corners: np.ndarray, erode_m: float, *,
     eroded = mask > 0
     total = int(eroded.sum())
     usable = (eroded & valid & np.isfinite(values)
-              & (values > MIN_ELEVATION_M) & (values < MAX_ELEVATION_M))
+              & (values > lo) & (values < hi))
     samples = values[usable]
     median = float(np.median(samples)) if len(samples) else None
     result = {"median_z": median,
@@ -97,21 +144,16 @@ def sample_footprint(ds, corners: np.ndarray, erode_m: float, *,
     return result
 
 
-def sample_footprint_points(ds, corners, erode_m: float, minimum_pixels: int = 60):
-    """Return E/N/Z samples for plane fitting, or None below required support."""
-    result = sample_footprint(ds, corners, erode_m, include_samples=True)
-    if result["valid_pixels"] < minimum_pixels or result["valid_pixels"] == 0:
-        return None
-    return result["samples"]
-
-
-def center_elevation(ds, point: np.ndarray) -> float | None:
+def center_elevation(ds, point: np.ndarray,
+                     elevation_range: tuple[float, float] | None = None) -> float | None:
     """Elevation of the DSM pixel containing a world point; never borrows nearby pixels."""
+    lo, hi = (LEGACY_ELEVATION_RANGE_M if elevation_range is None
+              else elevation_range)
     col_f, row_f = ~ds.transform @ (float(point[0]), float(point[1]))
     col, row = int(math.floor(col_f)), int(math.floor(row_f))
     if not (0 <= col < ds.width and 0 <= row < ds.height):
         return None
     values, valid = dsm_pixels(ds, Window(col, row, 1, 1))
     z = float(values[0, 0])
-    return z if valid[0, 0] and MIN_ELEVATION_M < z < MAX_ELEVATION_M else None
+    return z if valid[0, 0] and lo < z < hi else None
 
