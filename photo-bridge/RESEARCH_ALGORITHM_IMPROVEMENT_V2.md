@@ -816,9 +816,110 @@ P0 已把“观测是否唯一/一致”变成字段并过滤。P1 不再改观�
 
 ---
 
-## 16. 当前状态
+## 16. P1 实施记录（2026-11-21）
 
-- 文档：已提交（c2daac6）。
-- P0 代码：已改，未提交；97 tests passed；内部 39 格 +7.65%。
-- P0 门槛：机制通过；247 仍有 39% 歧义与 >3 m accepted，需在 P1 前/并行做一次边缘诊断。
-- 下一阶段：P1-1 A/B。
+### 16.1 已落地
+
+- **P1-1**：新增 2×2 协方差加权相似 _weighted_similarity_covariance；RBF 噪声权重 1/sigma_i^2；连续 Huber IRLS。默认 **关闭**，由 use_observation_covariance=True 开启。
+- **P1-2**：RegularizedPlanimetricField.jacobian、low_frequency_coupling。
+- **P1-3**：support_metrics（N_eff、C_p、lambda_min/lambda_max、nearest）。
+- **P1-4**：面板行新增 source_valid / field_supported / target_valid 及 component 级标志、low_confidence。
+- **P1-5**：field_uncertainty.block_bootstrap_uncertainty。
+- 新增 test_field_diagnostics.py、test_field_uncertainty.py；当前 **100 tests passed**。
+
+### 16.2 P1-1 A/B（Sigma_i 开关打开 vs P0 q-only）
+
+| 站 | P1 相对 P0 均值 | 最差方案 | 面板 Delta P50/max |
+|---|---|---|---|
+| 141 | +5.3% | edge_N -48.9% | 0.038 / 0.211 m |
+| 247 | +2.5% | edge_E -28.1% | 0.169 / 0.337 m |
+| 290 | **-17.5%** | edge_S -96.6% | 0.016 / 0.048 m |
+
+结论：**Sigma_i 加权不采用**。它在 141/247 的多数内部方案为正，但制造了新的边缘回归；290 整体显著变差。默认保持 P0 q-only 场。
+
+### 16.3 P1-2 诊断结果（P0 场）
+
+| 站 | det_min | sigma_min | sigma_max | N_eff 中位 | lambda_min 中位 | eta | eta_sim |
+|---|---|---|---|---|---|---|---|
+| 141 | 0.995 | 0.994 | 1.013 | 50.7 | 877 | **0.952** | **1.794** |
+| 247 | 0.965 | 0.965 | 1.044 | 26.0 | 71.2 | **0.754** | 0.377 |
+| 290 | 1.005 | 0.999 | 1.010 | 23.6 | 204 | **0.968** | 0.745 |
+
+关键发现：
+
+- 没有折叠（det 均 >0）；
+- **eta 很高（0.75-0.97）**：RBF 残差的大部分是常数/线性低频模式；
+- 141 的 eta_sim=1.79：RBF 的低频分量甚至大于相似项位移；
+- 这解释了 P1-1 为何不稳：Sigma_i 改权重后，RBF 更容易吸收本应由相似项解释的低频形变。
+
+### 16.4 P1 判定
+
+- P1-1：**拒绝**，保持 P0 场。
+- P1-2/3/4/5：**实现并通过测试**；诊断有效，但没有改变场。
+- P1 未通过“空间块留出不退化”的门槛，因此不进入 P2 的权重改动；但 P2 应先处理 P1-2 暴露的低频耦合。
+
+---
+
+## 17. 下一阶段 P2 分析
+
+P1 的关键不是 Sigma_i，而是 **相似项与 RBF 的低频重叠**。P2 按以下顺序：
+
+### 17.1 P2-1 低频正交化（最高优先）
+
+目标：让 RBF 不再重新拟合常数/线性模式。
+
+两个候选：
+
+1. 约束 RBF：Phi^T W K c = 0。
+2. 惩罚低频：min_c ||W^(1/2)(Kc-r)||^2 + lambda||c||^2 + mu||P_low g||^2。
+
+A/B 对象：P0 q-only 场 vs P2-1；指标：
+
+- eta、eta_sim 下降；
+- 13 方案留出不退化；
+- 面板 Delta 不显著增大；
+- 141 edge_N、247 edge_E、290 edge_S 不出现新负项。
+
+### 17.2 P2-2 KRR vs ridge
+
+P1-1 的失败可能与当前 ridge 形式有关：
+
+- 当前：(K^T W K + lambda I)c = K^T W r；
+- 标准加权 KRR：(K + lambda W^-1)c = r，或 (W K + lambda I)c = W r。
+
+两者 lambda 分开调；用空间块留出比较。只有在 P2-1 后再比较，避免把低频耦合和正则化形式混在一起。
+
+### 17.3 P2-3 L, lambda 空间隔离选择
+
+P2-1/P2-2 稳定后，再用嵌套空间 CV 选 L, lambda。评价用留出块；P3 独立锚点仍是最终验收。
+
+### 17.4 P2 不能解决什么
+
+- 不能修复 coherent periodic alias；247 的 39% 歧义仍是观测层问题。
+- 不能证明绝对几何正确；P3 独立锚点才能。
+- 不应先用 L, lambda 去压 eta；先正交化，再调参。
+
+### 17.5 P2 顺序与门槛
+
+1. P2-1 正交化 A/B。
+2. P2-2 KRR vs ridge。
+3. P2-3 L, lambda 空间 CV。
+
+门槛：
+
+- eta/eta_sim 明显下降；
+- 13 方案留出不退化；
+- 无 det<=0；
+- 面板 Delta 不显著增大；
+- P2 通过前不做 P3。
+
+---
+
+## 18. 当前状态
+
+- 文档提交：c2daac6、61b0c1a。
+- P0 代码提交：14dbd98；P1 代码提交：6298cca。
+- 测试：100 passed。
+- 当前生产场：P0 q-only；Sigma_i 加权默认关闭。
+- P1-1：拒绝；P1 诊断：通过；低频耦合是主要问题。
+- 下一阶段：**P2-1 低频正交化 A/B**。
