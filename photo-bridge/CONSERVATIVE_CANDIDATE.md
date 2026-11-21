@@ -1,8 +1,9 @@
 # 保守候选模型交付说明
 
 状态：按用户决定，接受“保守候选”，停止继续调场模型。  
-代码基线：ea5b404  
-测试：111 passed  
+代码基线：6492fba  
+测试：114 passed  
+数学模型审阅：MATH_MODEL_AUDIT.md
 日期：2026-11-21
 
 ## 1. 定位
@@ -38,8 +39,8 @@
 面板行同时提供：
 
 - valid：兼容字段，表示组件至少有源 alpha；
-- conservative_valid：source_valid AND field_supported AND target_valid；
-- component_conservative_valid：组件级保守标志；
+- conservative_valid：逐点 source_valid AND field_supported AND target_valid；
+- component_conservative_valid：中心点 conservative_valid AND 至少 2 个角点 conservative_valid；
 - low_confidence：场/目标不满足时的低置信标志。
 
 摘要提供：
