@@ -56,6 +56,8 @@ def _panels_from_json(path):
             "corners": corners,
             "corrected_valid": int(center.get("corrected_valid", 0)),
             "field_valid": int(center.get("field_valid", 1)),
+            "conservative_valid": (None if center.get("conservative_valid") is None
+                                   else int(center["conservative_valid"])),
             "valid": int(center.get("valid", 0)),
         })
     return panels
@@ -78,6 +80,8 @@ def _panels_from_csv(path):
             "corners": corners,
             "corrected_valid": int(center.get("corrected_valid", 0)),
             "field_valid": int(center.get("field_valid", 1)),
+            "conservative_valid": (None if center.get("conservative_valid") is None
+                                   else int(center["conservative_valid"])),
             "valid": int(center.get("valid", 0)),
         })
     return panels
@@ -96,6 +100,7 @@ def _render_axis(axis, image, alpha, panels, array_of_panel, prefix,
     valid_polygons = []
     invalid_polygons = []
     unsupported_polygons = []
+    low_confidence_polygons = []
     for panel in panels:
         points = _xy(panel["corners"], prefix)
         if not all(bool(np.isfinite([x, y]).all()) for x, y in points):
@@ -106,6 +111,8 @@ def _render_axis(axis, image, alpha, panels, array_of_panel, prefix,
             invalid_polygons.append(scaled)
         elif not panel["field_valid"]:
             unsupported_polygons.append(scaled)
+        elif panel.get("conservative_valid") == 0:
+            low_confidence_polygons.append(scaled)
         else:
             valid_polygons.append(scaled)
     axis.add_collection(PolyCollection(
@@ -117,6 +124,9 @@ def _render_axis(axis, image, alpha, panels, array_of_panel, prefix,
     axis.add_collection(PolyCollection(
         unsupported_polygons, facecolors=(0, 0, 0, 0),
         edgecolors=(1.0, 0.1, 0.1, 0.9), linewidths=0.5))
+    axis.add_collection(PolyCollection(
+        low_confidence_polygons, facecolors=(0, 0, 0, 0),
+        edgecolors=(1.0, 0.85, 0.1, 0.9), linewidths=0.5))
     if show_labels:
         by_array = {}
         for panel in panels:
@@ -224,18 +234,22 @@ def render(args):
         offset=(thermal_bbox[0], thermal_bbox[1]))
     _add_scale_bar(axis, crop_w, crop_h, thermal_resolution,
                    target_width, thermal_width)
-    valid_count = sum(panel["corrected_valid"] for panel in panels)
+    corrected_count = sum(panel["corrected_valid"] for panel in panels)
+    conservative_count = sum(
+        panel["corrected_valid"] if panel.get("conservative_valid") is None
+        else panel["conservative_valid"] for panel in panels)
     axis.text(
         0.01, 0.985,
-        "%s  panels=%d  arrays=%d  corrected_valid=%d  thermal resolve=%.3f m/px" %
-        (station, len(panels), len(set(array_of_panel.values())), valid_count,
-         thermal_resolution),
+        "%s  panels=%d  arrays=%d  corrected_valid=%d  conservative_valid=%d  thermal resolve=%.3f m/px" %
+        (station, len(panels), len(set(array_of_panel.values())), corrected_count,
+         conservative_count, thermal_resolution),
         transform=axis.transAxes, color="white", fontsize=11, va="top",
         bbox=dict(boxstyle="round,pad=0.2", fc="black", ec="none", alpha=0.55))
     axis.legend(handles=[
         Patch(edgecolor=(0.1, 1.0, 0.25, 0.85), facecolor="none", label="corrected + field valid"),
         Patch(edgecolor=(1.0, 0.55, 0.1, 0.9), facecolor="none", label="no corrected coverage"),
         Patch(edgecolor=(1.0, 0.1, 0.1, 0.9), facecolor="none", label="field unsupported"),
+        Patch(edgecolor=(1.0, 0.85, 0.1, 0.9), facecolor="none", label="conservative gate failed"),
     ], loc="lower left", fontsize=9, framealpha=0.55, facecolor="black",
        labelcolor="white")
     figure.savefig(out_dir / ("%s_full_arrays.png" % station), dpi=120,
@@ -280,7 +294,8 @@ def render(args):
         "station": station,
         "panels": len(panels),
         "arrays": len(set(array_of_panel.values())),
-        "corrected_valid": valid_count,
+        "corrected_valid": corrected_count,
+        "conservative_valid": conservative_count,
         "outputs": [
             str(out_dir / ("%s_full_arrays.png" % station)),
             str(out_dir / ("%s_visible_vs_thermal.png" % station)),
