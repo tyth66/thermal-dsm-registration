@@ -128,6 +128,18 @@ def pixel_covariance_to_world(covariance_px, resolution):
     return flip @ np.asarray(covariance_px, float) @ flip.T
 
 
+def _competing_separation(candidates, resolution, cc_margin=0.02):
+    """Max spatial separation among peaks within cc_margin of the best."""
+    if not candidates:
+        return 0.0
+    best = candidates[0]
+    close = [item for item in candidates
+             if item["cc"] >= best["cc"] - cc_margin]
+    return max((float(np.hypot(item["sx"] - best["sx"],
+                              item["sy"] - best["sy"]) * resolution)
+                for item in close), default=0.0)
+
+
 def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int,
                    visible_mask=None, thermal_mask=None):
@@ -221,12 +233,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                      or alias_conflict)
     uniqueness = float(np.clip(margin / AMBIGUITY_MARGIN, 0.0, 1.0))
 
-    best_cc = float(forward[0]["cc"])
-    close = [item for item in forward if item["cc"] >= best_cc - 0.02]
-    competing_separation_m = max(
-        (float(np.hypot(item["sx"] - forward[0]["sx"],
-                        item["sy"] - forward[0]["sy"]) * resolution)
-         for item in close), default=0.0)
+    competing_separation_m = _competing_separation(forward, resolution)
 
     scores = np.asarray([item["cc"] for item in forward], float)
     shifts_px = np.asarray([[item["sx"], item["sy"]] for item in forward], float)
