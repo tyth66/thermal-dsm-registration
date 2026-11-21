@@ -159,7 +159,16 @@ r_j^{new}=d_j^{prior1}-\hat\delta_{V2}(p_j)
 - 高 margin 是单候选伪影；
 - 固定评价仍受 V2 参考和空间重叠影响。
 
-## 8. 后续：足迹隔离结果
+## 8. 统一搜索范围诊断
+
+- prior1 新增 20 条中，8 条在 prior2 records 中有 2–4 个候选并触发 ambiguous；
+- 8/8 在 prior1 下显示 margin=1.0；
+- 12 条未匹配，不能判断；
+- 说明高 margin 至少部分是搜索窗口截断。
+
+详见 V3B_PRIOR_UNIQUENESS_DIAGNOSTIC.md。
+
+## 9. 后续：足迹隔离结果
 
 已补严格足迹隔离评价：
 

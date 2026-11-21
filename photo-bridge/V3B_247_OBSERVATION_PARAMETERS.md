@@ -130,6 +130,11 @@
 - 高 margin 主要是单候选伪影：新增 19/20 的 candidate_count=1；
 - 四象限留出仍有 46% 的训练中心落在一个 tile 内，空间未完全隔离。
 
+## 8.1 后续诊断
+
+- 统一搜索范围诊断：V3B_PRIOR_UNIQUENESS_DIAGNOSTIC.md；
+- 三站足迹可行性：V3B_FEASIBILITY_REPORT.md。
+
 ## 9. 下一步
 
 1. 对 B1/B3/B4 使用固定的共同评价点，而不是各自 accepted；

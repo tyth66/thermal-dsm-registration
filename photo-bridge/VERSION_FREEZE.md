@@ -1,8 +1,8 @@
 # 当前算法基线冻结（candidate-2026-11-21）
 
 状态：冻结默认结构、参数、评价集合与输出口径。  
-代码基线：24c7af0（默认模型）；V3-A profiler：861be7c；V3-B 参数支持：154c0fb；candidate_count：a7b91b7；评价器：70a5f33  
-测试：126 passed
+代码基线：24c7af0（默认模型）；V3-A profiler：861be7c；V3-B 参数支持：154c0fb；candidate_count：a7b91b7；评价器：70a5f33；可行性：f65aea1  
+测试：127 passed
 
 ## 1. 冻结默认配置
 
