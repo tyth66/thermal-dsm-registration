@@ -24,7 +24,6 @@ class FinalPipelineInputs:
     thermal_ortho: Path
     output_json: Path
     grid_step: int = 16
-    panel_mapping: str = "rigid"
 
 
 @dataclass(frozen=True)
@@ -59,7 +58,6 @@ def planimetric_provenance(result) -> dict:
             "short_overlap_m": float(field_support.short_overlap_m),
             "requested_max_distance_m": float(
                 field_support.requested_max_distance_m),
-            "adaptive": bool(field_support.adaptive),
         },
         "attempts": [dict(attempt) for attempt in result.attempts],
         "kernel_length_m": float(result.field.kernel_length_m),
@@ -78,7 +76,6 @@ def run_final_pipeline(inputs: FinalPipelineInputs) -> FinalPipelineResult:
         thermal_ortho=inputs.thermal_ortho,
         residual_model_path=Path("in_memory"),
         grid_step=inputs.grid_step,
-        panel_mapping=inputs.panel_mapping,
     ))
     computation.summary["planimetric"] = planimetric_provenance(planimetric)
     computation.summary["outputs"] = [str(inputs.output_json)]

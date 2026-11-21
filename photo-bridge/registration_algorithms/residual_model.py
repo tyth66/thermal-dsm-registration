@@ -93,110 +93,10 @@ def _weighted_similarity(east: np.ndarray, north: np.ndarray,
     return matrix, translation, mask
 
 
-def _weighted_similarity_covariance(east, north, target_east, target_north,
-                                    weights, sigma_e, sigma_n, sigma_en):
-    """Robust similarity with a 2x2 observation covariance per row.
-
-    The weighted normal equations solve for (a, h, bx, by) with
-    target_e = a*e - h*n + bx, target_n = h*e + a*n + by.  Rows with a larger
-    Sigma_i get a smaller inverse-covariance weight; a continuous Huber IRLS
-    limits the remaining outlier influence.
-    """
-    source = np.column_stack([east, north])
-    target = np.column_stack([target_east, target_north])
-    n = len(source)
-    weights = np.asarray(weights, float)
-    weights = np.where(np.isfinite(weights) & (weights > 0), weights, 1.0)
-    se = np.clip(np.asarray(sigma_e, float), 1e-3, None)
-    sn = np.clip(np.asarray(sigma_n, float), 1e-3, None)
-    sen = np.asarray(sigma_en, float)
-    cov = np.empty((n, 2, 2), float)
-    cov[:, 0, 0] = se ** 2
-    cov[:, 1, 1] = sn ** 2
-    cov[:, 0, 1] = sen
-    cov[:, 1, 0] = sen
-    det = se ** 2 * sn ** 2 - sen ** 2
-    good = det > 1e-12
-    if not np.all(good):
-        det = np.where(good, det, 1.0)
-        cov[~good, 0, 1] = 0.0
-        cov[~good, 1, 0] = 0.0
-        det = se ** 2 * sn ** 2
-    inv = np.empty_like(cov)
-    inv[:, 0, 0] = cov[:, 1, 1] / det
-    inv[:, 1, 1] = cov[:, 0, 0] / det
-    inv[:, 0, 1] = -cov[:, 0, 1] / det
-    inv[:, 1, 0] = inv[:, 0, 1]
-    scale = float(np.median(0.5 * (cov[:, 0, 0] + cov[:, 1, 1])))
-    inv *= max(scale, 1e-6)
-
-    source_center = np.average(source, axis=0, weights=weights)
-    target_center = np.average(target, axis=0, weights=weights)
-    centered = source - source_center
-    desired = target - target_center
-
-    design = np.zeros((2 * n, 4), float)
-    design[0::2, 0] = centered[:, 0]
-    design[0::2, 1] = -centered[:, 1]
-    design[0::2, 2] = 1.0
-    design[1::2, 0] = centered[:, 1]
-    design[1::2, 1] = centered[:, 0]
-    design[1::2, 3] = 1.0
-    rhs = desired.ravel()
-    robust = np.ones(n, float)
-    matrix = np.eye(2)
-    translation = np.zeros(2)
-    inliers = np.ones(n, bool)
-    for _ in range(4):
-        normal = np.zeros((4, 4), float)
-        vector = np.zeros(4, float)
-        for i in range(n):
-            xi = design[2 * i:2 * i + 2]
-            wi = weights[i] * robust[i] * inv[i]
-            normal += xi.T @ wi @ xi
-            vector += xi.T @ wi @ rhs[2 * i:2 * i + 2]
-        try:
-            theta = np.linalg.solve(normal, vector)
-        except np.linalg.LinAlgError:
-            break
-        a, h, bx, by = theta
-        matrix = np.array([[a, -h], [h, a]])
-        b_centered = np.array([bx, by])
-        translation = target_center - matrix @ source_center + b_centered
-        residual = target - (source @ matrix.T + translation)
-        mahalanobis = np.sqrt(np.maximum(
-            np.einsum("ni,nij,nj->n", residual, inv, residual), 0.0))
-        median = float(np.median(mahalanobis))
-        mad = 1.4826 * float(np.median(np.abs(mahalanobis - median)))
-        threshold = max(3.0 * mad, 1.0)
-        inliers = mahalanobis <= threshold
-        robust = np.minimum(1.0, threshold / np.maximum(mahalanobis, 1e-9))
-    return matrix, translation, inliers
-
-
-def _low_frequency_basis(centers: np.ndarray, degree: int = 1) -> np.ndarray:
-    """Constant + linear (and optionally quadratic) normalized coordinates."""
-    center = np.mean(centers, axis=0)
-    scale = np.maximum(np.std(centers, axis=0), 1e-9)
-    normalized = (centers - center) / scale
-    columns = [np.ones(len(centers)), normalized[:, 0], normalized[:, 1]]
-    if degree >= 2:
-        columns.extend([normalized[:, 0] ** 2,
-                        normalized[:, 0] * normalized[:, 1],
-                        normalized[:, 1] ** 2])
-    return np.column_stack(columns)
-
-
 def fit_regularized_field(rows: Iterable[dict], tile_m: float,
                           max_distance_m: float = 30.0,
                           kernel_length_m: float | None = None,
-                          ridge: float = 0.1,
-                          support_weighting: bool = True,
-                          use_observation_covariance: bool = False,
-                          orthogonal_low_frequency: bool = False,
-                          low_frequency_degree: int = 1,
-                          kernel_ridge: str = "coefficient",
-                          low_frequency_penalty: float = 0.0):
+                          ridge: float = 0.1):
     """Fit global similarity + regularized RBF residual.
 
     The residual model decays to zero outside the tile support, so weak-support
@@ -217,13 +117,6 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
     quality = np.asarray([float(row.get("quality_weight", 1.0)) for row in rows], float)
     quality = np.clip(np.where(np.isfinite(quality), quality, 1e-3), 1e-3, 1.0)
     cc = cc * quality
-    sigma_e = np.asarray([float(row.get("sigma_e", np.nan)) for row in rows], float)
-    sigma_n = np.asarray([float(row.get("sigma_n", np.nan)) for row in rows], float)
-    sigma_en = np.asarray([float(row.get("sigma_en", 0.0)) for row in rows], float)
-    has_sigma = bool(use_observation_covariance
-                     and np.all(np.isfinite(sigma_e))
-                     and np.all(np.isfinite(sigma_n))
-                     and np.all(sigma_e > 0) and np.all(sigma_n > 0))
     tree = cKDTree(np.column_stack([east, north]))
     if len(rows) > 1:
         spacing = tree.query(np.column_stack([east, north]), k=2)[0][:, 1]
@@ -234,64 +127,25 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
     if kernel_length_m is None:
         kernel_length_m = max(2.5 * float(tile_m), 4.0 * spacing_median)
     kernel_length_m = max(float(kernel_length_m), 1e-6)
-    if support_weighting and len(rows) > 2:
-        support = np.exp(-0.5 * ((tree.query(
-            np.column_stack([east, north]), k=2)[0][:, 1]
-            / max(spacing_median, 1e-6)) - 1.0) ** 2)
-        weights = cc * np.where(np.isfinite(support), support, 1.0)
-    else:
-        weights = cc
-    if has_sigma:
-        matrix, translation, inliers = _weighted_similarity_covariance(
-            east, north, target_east, target_north, weights,
-            sigma_e, sigma_n, sigma_en)
-    else:
-        matrix, translation, inliers = _weighted_similarity(
-            east, north, target_east, target_north, weights)
+    support = np.exp(-0.5 * ((tree.query(
+        np.column_stack([east, north]), k=2)[0][:, 1]
+        / max(spacing_median, 1e-6)) - 1.0) ** 2)
+    weights = cc * np.where(np.isfinite(support), support, 1.0)
+    matrix, translation, inliers = _weighted_similarity(
+        east, north, target_east, target_north, weights)
     target = np.column_stack([target_east, target_north])
     aligned = np.column_stack([east, north]) @ matrix.T + translation
     residual = target - aligned
     centers = np.column_stack([east, north])
     fit_weights = weights * np.where(inliers, 1.0, 0.2)
-    if has_sigma:
-        sigma2 = 0.5 * (sigma_e ** 2 + sigma_n ** 2)
-        reference = float(np.median(sigma2))
-        noise_weight = np.clip(reference / np.maximum(sigma2, 1e-6), 0.05, 20.0)
-        fit_weights = fit_weights * noise_weight
     fit_residual = residual
     distances = np.hypot(centers[:, None, 0] - centers[None, :, 0],
                          centers[:, None, 1] - centers[None, :, 1])
     kernel = np.exp(-0.5 * (distances / kernel_length_m) ** 2)
     weighted_kernel = kernel * fit_weights[:, None]
-    if kernel_ridge not in ("coefficient", "krr"):
-        raise ValueError("kernel_ridge must be 'coefficient' or 'krr'")
-    if kernel_ridge == "krr":
-        normal = fit_weights[:, None] * kernel + float(ridge) * np.eye(len(centers))
-        rhs = fit_weights[:, None] * fit_residual
-    else:
-        normal = kernel.T @ weighted_kernel + float(ridge) * np.eye(len(centers))
-        rhs = weighted_kernel.T @ fit_residual
-    if low_frequency_penalty > 0.0 and not orthogonal_low_frequency:
-        basis = _low_frequency_basis(centers, low_frequency_degree)
-        gram = basis.T @ basis
-        projector = basis @ np.linalg.solve(gram, basis.T)
-        low_kernel = projector @ kernel
-        normal = normal + float(low_frequency_penalty) * (low_kernel.T @ low_kernel)
-    if orthogonal_low_frequency:
-        basis = _low_frequency_basis(centers, low_frequency_degree)
-        constraint = basis.T @ (fit_weights[:, None] * kernel)
-        count = constraint.shape[0]
-        size = len(centers)
-        system = np.zeros((size + count, size + count), float)
-        system[:size, :size] = normal
-        system[:size, size:] = constraint.T
-        system[size:, :size] = constraint
-        augmented_rhs = np.zeros((size + count, 2), float)
-        augmented_rhs[:size] = rhs
-        solution = np.linalg.solve(system, augmented_rhs)
-        coefficients = solution[:size]
-    else:
-        coefficients = np.linalg.solve(normal, rhs)
+    normal = kernel.T @ weighted_kernel + float(ridge) * np.eye(len(centers))
+    rhs = weighted_kernel.T @ fit_residual
+    coefficients = np.linalg.solve(normal, rhs)
     tiles = [{
         "east": float(east[i]), "north": float(north[i]), "cc": float(cc[i]),
         "residual_e": float(residual[i, 0]), "residual_n": float(residual[i, 1]),
@@ -428,29 +282,6 @@ class RegularizedPlanimetricField(PlanimetricField):
             "lambda_min": eigenvalues[:, 0],
             "lambda_max": eigenvalues[:, -1],
             "nearest_m": nearest,
-        }
-
-    def low_frequency_coupling(self, east, north):
-        """Measure how much of g(p) is a constant/linear (similarity-like) mode."""
-        points = np.column_stack([np.asarray(east, float), np.asarray(north, float)])
-        residual = self.rbf_component(east, north)
-        if len(points) < 4 or not np.any(np.isfinite(residual)):
-            return {"eta": 0.0, "eta_sim": 0.0}
-        center = np.mean(points, axis=0)
-        scale = np.maximum(np.std(points, axis=0), 1e-9)
-        normalized = (points - center) / scale
-        basis = np.column_stack([np.ones(len(points)), normalized[:, 0],
-                                 normalized[:, 1]])
-        coefficients = np.linalg.lstsq(basis, residual, rcond=None)[0]
-        low = basis @ coefficients
-        low_norm = float(np.linalg.norm(low))
-        residual_norm = float(np.linalg.norm(residual))
-        similarity = points @ (self.matrix.T - np.eye(2)) + self.translation
-        similarity_norm = float(np.linalg.norm(similarity))
-        return {
-            "eta": low_norm / residual_norm if residual_norm > 1e-12 else 0.0,
-            "eta_sim": (low_norm / similarity_norm
-                        if similarity_norm > 1e-12 else 0.0),
         }
 
     def evaluate(self, east, north):

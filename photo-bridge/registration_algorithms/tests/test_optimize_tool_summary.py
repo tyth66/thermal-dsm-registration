@@ -47,7 +47,7 @@ def _estimation(field):
         overlap_extent_m=(1.0, 1.0),
         tiling=SimpleNamespace(tile_m=40.0, step_m=20.0, tile_px=400,
                                 step_px=200),
-        field_support=SimpleNamespace(adaptive=True, short_overlap_m=1.0,
+        field_support=SimpleNamespace(short_overlap_m=1.0,
                                        max_distance_m=30.0,
                                        requested_max_distance_m=30.0),
         attempts=(),

@@ -43,13 +43,9 @@ def main(argv=None) -> int:
     parser.add_argument("--step-m", type=float, default=20.0,
                         help="requested maximum step; capped at tile/2")
     parser.add_argument("--highpass-sigma-m", type=float, default=1.5)
-    parser.add_argument("--fixed-tiling", action="store_true",
-                        help="use the requested tile/step exactly (disable adaptive tiling)")
     parser.add_argument("--field-max-distance-m", type=float, default=30.0)
     parser.add_argument("--regularized-kernel-m", type=float, default=None)
     parser.add_argument("--regularized-ridge", type=float, default=0.1)
-    parser.add_argument("--fixed-field-support", action="store_true",
-                        help="use the requested field support distance exactly")
     parser.add_argument("--warp-threads", type=int,
                         default=min(8, os.cpu_count() or 1),
                         help="GDAL warp threads for DSM reprojection (default: 8)")
@@ -74,8 +70,6 @@ def main(argv=None) -> int:
         field_max_distance_m=args.field_max_distance_m,
         warp_threads=args.warp_threads,
         ecc_workers=args.ecc_workers,
-        adaptive_tiling=not args.fixed_tiling,
-        adaptive_field_support=not args.fixed_field_support,
         regularized_kernel_m=args.regularized_kernel_m,
         regularized_ridge=args.regularized_ridge,
     ))
@@ -110,7 +104,6 @@ def main(argv=None) -> int:
         "tiling_attempts": list(estimation.attempts),
         "overlap_extent_m": list(estimation.overlap_extent_m),
         "field_support": {
-            "adaptive": estimation.field_support.adaptive,
             "short_overlap_m": estimation.field_support.short_overlap_m,
             "field_max_distance_m": estimation.field_support.max_distance_m,
             "requested_field_max_distance_m": estimation.field_support.requested_max_distance_m,

@@ -24,7 +24,7 @@ def test_synthetic_pipeline_recovers_known_shift():
     transform = from_origin(0.0, 100.0, 0.1, 0.1)
     records, domain = register(
         visible, thermal, joint, transform, 0.1, 4.0, 2.0,
-        workers=1, domain_mode="mode")
+        workers=1)
     assert len(records) >= 10
     assert domain["center_dx"] == pytest.approx(-0.30, abs=0.02)
     assert domain["center_dy"] == pytest.approx(-0.20, abs=0.02)
@@ -50,7 +50,7 @@ def test_synthetic_pipeline_robust_to_noise_and_nodata():
     transform = from_origin(0.0, 100.0, 0.1, 0.1)
     records, _ = register(
         visible, thermal, joint, transform, 0.1, 4.0, 2.0,
-        workers=1, domain_mode="mode")
+        workers=1)
     assert len(records) >= 8
     field = fit_regularized_field(records, tile_m=4.0, max_distance_m=30.0,
                                   kernel_length_m=None, ridge=0.1)

@@ -10,7 +10,6 @@ def test_adaptive_field_support_keeps_baseline_scale():
     plan = adaptive_field_support(202.0, 299.1, 30.0)
     assert plan.max_distance_m == pytest.approx(30.0)
     assert plan.short_overlap_m == pytest.approx(202.0)
-    assert plan.adaptive is True
 
 
 def test_adaptive_field_support_shrinks_small_station():
@@ -37,12 +36,6 @@ def test_adaptive_field_support_has_floor():
     """Very small overlaps are floored at 10 m instead of shrinking further."""
     plan = adaptive_field_support(20.0, 10.0, 30.0)
     assert plan.max_distance_m == pytest.approx(10.0)
-
-
-def test_fixed_field_support_uses_requested_value():
-    plan = adaptive_field_support(98.7, 52.2, 25.0, adaptive=False)
-    assert plan.max_distance_m == pytest.approx(25.0)
-    assert plan.adaptive is False
 
 
 def test_adaptive_tiling_caps_small_station_to_overlap():

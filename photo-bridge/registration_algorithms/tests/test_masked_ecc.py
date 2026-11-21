@@ -6,10 +6,7 @@ import pytest
 from rasterio.transform import from_origin
 
 from registration_algorithms.dsm_registration import _register_tile
-from registration_algorithms.masked_ecc import (
-    masked_ecc_candidates,
-    masked_ecc_surface,
-)
+from registration_algorithms.masked_ecc import masked_ecc_candidates
 
 
 def _structured_pair(size=64, roll=(2, -3)):
@@ -84,24 +81,6 @@ def test_register_tile_records_observability_fields():
     covariance = np.array([[record["sigma_e"] ** 2, record["sigma_en"]],
                            [record["sigma_en"], record["sigma_n"] ** 2]])
     assert np.all(np.linalg.eigvalsh(covariance) > 0.0)
-
-
-def test_separate_masks_recover_pixels_excluded_by_joint_mask():
-    size = 24
-    rng = np.random.default_rng(5)
-    visible = rng.normal(0, 1, (size, size)).astype(np.float32)
-    thermal = np.roll(visible, shift=(1, -2), axis=(0, 1))
-    visible_mask = np.ones((size, size), bool)
-    thermal_mask = np.ones((size, size), bool)
-    thermal_mask[:, 0] = False
-    joint = visible_mask & thermal_mask
-    _, _, joint_area = masked_ecc_surface(
-        visible, thermal, joint, max_shift_px=2)
-    _, _, separate_area = masked_ecc_surface(
-        visible, thermal, joint, max_shift_px=2,
-        visible_mask=visible_mask, thermal_mask=thermal_mask)
-    assert np.all(separate_area >= joint_area - 1e-9)
-    assert np.any(separate_area > joint_area)
 
 
 

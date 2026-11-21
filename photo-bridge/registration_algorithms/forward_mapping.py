@@ -32,33 +32,6 @@ def _alpha_at(u, v, width, height, alpha):
     return int(alpha[row, col])
 
 
-def _fit_similarity_2d(source: np.ndarray, target: np.ndarray):
-    """Least-squares similarity mapping source -> target (rotation+scale+t)."""
-    source = np.asarray(source, float)
-    target = np.asarray(target, float)
-    source_center = source.mean(axis=0)
-    target_center = target.mean(axis=0)
-    centered = source - source_center
-    desired = target - target_center
-    denom = float(np.sum(centered * centered))
-    if not np.isfinite(denom) or denom <= 1e-12:
-        return None
-    a = float(np.sum(centered[:, 0] * desired[:, 0]
-                     + centered[:, 1] * desired[:, 1]) / denom)
-    b = float(np.sum(centered[:, 0] * desired[:, 1]
-                     - centered[:, 1] * desired[:, 0]) / denom)
-    return a, b, source_center, target_center
-
-
-def _apply_similarity(source: np.ndarray, transform):
-    a, b, source_center, target_center = transform
-    centered = np.asarray(source, float) - source_center
-    x = centered[:, 0]
-    y = centered[:, 1]
-    return np.column_stack((target_center[0] + a * x - b * y,
-                            target_center[1] + b * x + a * y))
-
-
 def _component_conservative(panel_rows):
     """A panel is delivery-conservative only with a common valid core."""
     center = next((row for row in panel_rows if row["point"] == "center"), None)
@@ -73,8 +46,7 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                  visible_transform, thermal_transform,
                  thermal_width: int, thermal_height: int,
                  thermal_alpha: np.ndarray,
-                 field_max_distance: float | None = None,
-                 panel_mapping: str = "pointwise") -> list[dict]:
+                 field_max_distance: float | None = None) -> list[dict]:
     visible_inverse = ~visible_transform
     thermal_inverse = ~thermal_transform
     entries = []
@@ -102,28 +74,13 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     north_t = north + delta_n
     applied_delta_e = delta_e.copy()
     applied_delta_n = delta_n.copy()
-    if panel_mapping not in ("pointwise", "rigid", "similarity"):
-        raise ValueError("unknown panel_mapping: %s" % panel_mapping)
-    if panel_mapping != "pointwise":
-        for _, start, end in groups:
-            source = np.column_stack((east[start:end], north[start:end]))
-            target = np.column_stack((east_t[start:end], north_t[start:end]))
-            if panel_mapping == "rigid":
-                shift_e = float(np.mean(delta_e[start:end]))
-                shift_n = float(np.mean(delta_n[start:end]))
-                mapped = source + np.array([shift_e, shift_n])
-            else:
-                transform = _fit_similarity_2d(source, target)
-                if transform is None:
-                    shift_e = float(np.mean(delta_e[start:end]))
-                    shift_n = float(np.mean(delta_n[start:end]))
-                    mapped = source + np.array([shift_e, shift_n])
-                else:
-                    mapped = _apply_similarity(source, transform)
-            east_t[start:end] = mapped[:, 0]
-            north_t[start:end] = mapped[:, 1]
-            applied_delta_e[start:end] = mapped[:, 0] - source[:, 0]
-            applied_delta_n[start:end] = mapped[:, 1] - source[:, 1]
+    for _, start, end in groups:
+        shift_e = float(np.mean(delta_e[start:end]))
+        shift_n = float(np.mean(delta_n[start:end]))
+        east_t[start:end] = east[start:end] + shift_e
+        north_t[start:end] = north[start:end] + shift_n
+        applied_delta_e[start:end] = shift_e
+        applied_delta_n[start:end] = shift_n
     corrected_u, corrected_v = _pixels(thermal_inverse, east_t, north_t)
     naive_alpha = np.asarray([
         _alpha_at(naive_u[i], naive_v[i], thermal_width, thermal_height,

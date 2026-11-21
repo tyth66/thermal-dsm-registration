@@ -174,13 +174,12 @@ class _ShearField:
                 np.ones(size), np.zeros(size))
 
 
-def _panel_targets(panel_mapping):
+def _panel_targets():
     transforms = (from_origin(5.0, 205.0, 0.1, 0.1),
                   from_origin(5.0, 205.0, 0.2, 0.2))
     alpha = np.ones((1000, 1000), np.uint8)
     rows = panel_points(_one_panel(), _ShearField(), transforms[0],
-                        transforms[1], 1000, 1000, alpha,
-                        panel_mapping=panel_mapping)
+                        transforms[1], 1000, 1000, alpha)
     corners = [row for row in rows if row["point"].startswith("corner")]
     return np.asarray([[row["east_thermal"], row["north_thermal"]]
                        for row in corners])
@@ -191,19 +190,8 @@ def _edge_lengths(points):
 
 
 def test_panel_rigid_mapping_preserves_shape():
-    pointwise = _panel_targets("pointwise")
-    rigid = _panel_targets("rigid")
-    assert not np.allclose(_edge_lengths(pointwise), _edge_lengths(rigid))
+    rigid = _panel_targets()
     np.testing.assert_allclose(_edge_lengths(rigid), _edge_lengths(rigid)[0], atol=1e-9)
-
-
-def test_panel_similarity_mapping_preserves_shape():
-    pointwise = _panel_targets("pointwise")
-    similarity = _panel_targets("similarity")
-    assert not np.allclose(_edge_lengths(pointwise), _edge_lengths(similarity))
-    lengths = _edge_lengths(similarity)
-    assert lengths[0] == pytest.approx(lengths[2], abs=1e-9)
-    assert lengths[1] == pytest.approx(lengths[3], abs=1e-9)
 
 
 def test_any_originally_covered_panel_point_maps_all_five_points(transforms):

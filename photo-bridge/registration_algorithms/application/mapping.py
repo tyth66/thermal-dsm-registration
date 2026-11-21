@@ -27,7 +27,6 @@ class MappingInputs:
     residual_model_path: Path
     grid_step: int = 16
     field_max_distance_m: float | None = None
-    panel_mapping: str = "rigid"
 
 
 @dataclass(frozen=True)
@@ -46,8 +45,7 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         panel_rows = panel_points(
             inputs.visible_world, field, visible_ortho.transform,
             thermal_ortho.transform, thermal_ortho.width, thermal_ortho.height,
-            thermal_alpha, inputs.field_max_distance_m,
-            panel_mapping=inputs.panel_mapping)
+            thermal_alpha, inputs.field_max_distance_m)
         grid = grid_mapping(
             inputs.visible_world, field, visible_ortho.transform,
             visible_ortho.width, visible_ortho.height,

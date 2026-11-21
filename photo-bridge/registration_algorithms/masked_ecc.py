@@ -38,9 +38,7 @@ def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
-                       joint: np.ndarray, max_shift_px: int | None = None,
-                       visible_mask: np.ndarray | None = None,
-                       thermal_mask: np.ndarray | None = None):
+                       joint: np.ndarray, max_shift_px: int | None = None):
     """Return integer shifts, ECC and common-mask area for one tile.
 
     visible/thermal are high-pass arrays; joint is the boolean common mask.
@@ -52,21 +50,16 @@ def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
     if visible.shape != thermal.shape or visible.shape != joint.shape:
         raise ValueError("visible, thermal and joint must share one shape")
     height, width = joint.shape
-    mv = (joint if visible_mask is None else visible_mask)
-    mt = (joint if thermal_mask is None else thermal_mask)
-    mv = np.asarray(mv, float)
-    mt = np.asarray(mt, float)
-    v = np.where(mv > 0, visible, 0.0)
-    t = np.where(mt > 0, thermal, 0.0)
+    mask = joint.astype(float)
+    v = np.where(joint, visible, 0.0)
+    t = np.where(joint, thermal, 0.0)
 
-    # C_m(s) = sum_x mv(x) mt(x+s); with one shared joint mask this reduces to
-    # the previous J(x)J(x+s) overlap.
-    c_m = _corr(mv, mt)
-    c_v = _corr(mv * v, mt)
-    c_t = _corr(mv, mt * t)
-    c_vv = _corr(mv * v * v, mt)
-    c_tt = _corr(mv, mt * t * t)
-    c_vt = _corr(mv * v, mt * t)
+    c_m = _corr(mask, mask)
+    c_v = _corr(mask * v, mask)
+    c_t = _corr(mask, mask * t)
+    c_vv = _corr(mask * v * v, mask)
+    c_tt = _corr(mask, mask * t * t)
+    c_vt = _corr(mask * v, mask * t)
 
     if max_shift_px is None:
         max_shift_px = min(height, width) // 2
@@ -127,16 +120,12 @@ def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
                           nms_px: int = DEFAULT_NMS_PX,
                           max_shift_px: int | None = None,
                           prior: tuple[float, float] | None = None,
-                          radius_px: float | None = None,
-                          visible_mask: np.ndarray | None = None,
-                          thermal_mask: np.ndarray | None = None) -> list[dict]:
+                          radius_px: float | None = None) -> list[dict]:
     """Return the strongest masked-ECC translation peaks.
 
     Each dict carries subpixel sx/sy in pixels, cc, and integer peak indices.
     """
-    shifts, ecc, _ = masked_ecc_surface(
-        visible, thermal, joint, max_shift_px,
-        visible_mask=visible_mask, thermal_mask=thermal_mask)
+    shifts, ecc, _ = masked_ecc_surface(visible, thermal, joint, max_shift_px)
     valid = np.isfinite(ecc)
     if not np.any(valid):
         return []

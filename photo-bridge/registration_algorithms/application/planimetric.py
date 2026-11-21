@@ -38,18 +38,8 @@ class PlanimetricInputs:
     field_max_distance_m: float = 30.0
     warp_threads: int = 8
     ecc_workers: int = 8
-    adaptive_tiling: bool = True
-    adaptive_field_support: bool = True
     regularized_kernel_m: float | None = None
     regularized_ridge: float = 0.1
-    domain_mode: str = "mode"
-    domain_use_usable: bool = False
-    mask_mode: str = "joint"
-    use_observation_covariance: bool = False
-    orthogonal_low_frequency: bool = False
-    low_frequency_degree: int = 1
-    kernel_ridge: str = "coefficient"
-    low_frequency_penalty: float = 0.0
 
 
 PLANIMETRIC_SCALE_PARAMETERS = ("resolution_m", "tile_m", "step_m",
@@ -66,8 +56,6 @@ def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
     for name in PLANIMETRIC_SCALE_PARAMETERS:
         if not getattr(inputs, name) > 0:
             raise ValueError("%s must be positive" % name)
-    if inputs.mask_mode not in ("joint", "separate"):
-        raise ValueError("mask_mode must be 'joint' or 'separate'")
 
 
 @dataclass(frozen=True)
@@ -87,7 +75,6 @@ class FieldSupportPlan:
     max_distance_m: float
     short_overlap_m: float
     requested_max_distance_m: float
-    adaptive: bool
 
 
 @dataclass(frozen=True)
@@ -106,8 +93,7 @@ class PlanimetricResult:
 
 def adaptive_field_support(overlap_width_m: float,
                            overlap_height_m: float,
-                           requested_max_distance_m: float,
-                           adaptive: bool = True) -> FieldSupportPlan:
+                           requested_max_distance_m: float) -> FieldSupportPlan:
     """Scale the field support distance with the short overlap edge.
 
     max_distance = min(30, max(10, 0.30 * short_edge)). The 0.30 ratio is the
@@ -121,16 +107,12 @@ def adaptive_field_support(overlap_width_m: float,
     if requested_max_distance_m <= 0:
         raise ValueError("field support distance must be positive")
     short_m = min(float(overlap_width_m), float(overlap_height_m))
-    if adaptive:
-        max_distance_m = min(MAX_FIELD_MAX_DISTANCE_M,
-                             max(MIN_FIELD_MAX_DISTANCE_M,
-                                 TARGET_FIELD_MAX_DISTANCE_SHORT_RATIO * short_m))
-    else:
-        max_distance_m = float(requested_max_distance_m)
+    max_distance_m = min(MAX_FIELD_MAX_DISTANCE_M,
+                         max(MIN_FIELD_MAX_DISTANCE_M,
+                             TARGET_FIELD_MAX_DISTANCE_SHORT_RATIO * short_m))
     return FieldSupportPlan(
         max_distance_m=float(max_distance_m), short_overlap_m=short_m,
-        requested_max_distance_m=float(requested_max_distance_m),
-        adaptive=bool(adaptive))
+        requested_max_distance_m=float(requested_max_distance_m))
 
 
 def adaptive_tiling(overlap_width_m: float, overlap_height_m: float,
@@ -179,21 +161,10 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
     overlap_height_m = joint.shape[0] * resolution
     overlap_width_m = joint.shape[1] * resolution
     field_support = adaptive_field_support(
-        overlap_width_m, overlap_height_m, inputs.field_max_distance_m,
-        inputs.adaptive_field_support)
-    if inputs.adaptive_tiling:
-        plan = adaptive_tiling(overlap_width_m, overlap_height_m, resolution,
-                               inputs.tile_m, inputs.step_m)
-        maximum_attempts = MAXIMUM_TILING_ATTEMPTS
-    else:
-        tile_px = max(1, int(round(inputs.tile_m / resolution)))
-        step_px = max(1, int(round(inputs.step_m / resolution)))
-        plan = TilingPlan(
-            tile_m=tile_px * resolution, step_m=step_px * resolution,
-            tile_px=tile_px, step_px=step_px,
-            overlap_width_m=overlap_width_m, overlap_height_m=overlap_height_m,
-            requested_tile_m=inputs.tile_m, requested_step_m=inputs.step_m)
-        maximum_attempts = 1
+        overlap_width_m, overlap_height_m, inputs.field_max_distance_m)
+    plan = adaptive_tiling(overlap_width_m, overlap_height_m, resolution,
+                           inputs.tile_m, inputs.step_m)
+    maximum_attempts = MAXIMUM_TILING_ATTEMPTS
     sigma_px = inputs.highpass_sigma_m / resolution
     visible_high = highpass(visible_z, visible_valid, sigma_px)
     thermal_high = highpass(thermal_z, thermal_valid, sigma_px)
@@ -205,13 +176,7 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         records, displacement = register(
             visible_high, thermal_high, joint, transform, resolution,
             tile_m, step_m, inputs.ecc_workers,
-            domain_mode=inputs.domain_mode,
-            domain_use_usable=inputs.domain_use_usable,
-            prior_radius_m=inputs.prior_radius_m,
-            visible_mask=(visible_valid if inputs.mask_mode == "separate"
-                          else None),
-            thermal_mask=(thermal_valid if inputs.mask_mode == "separate"
-                          else None))
+            prior_radius_m=inputs.prior_radius_m)
         accepted_raw = [record for record in records
                         if record.get("consistent", True)
                         and not record.get("ambiguous", False)]
@@ -231,8 +196,6 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         })
         if best is None or len(accepted_raw) > len(best[0]):
             best = (accepted_raw, records, tile_m, step_m)
-        if not inputs.adaptive_tiling:
-            break
         if len(accepted_raw) >= MINIMUM_ACCEPTED_TILES:
             break
         tile_m = max(plan.tile_m / (2 ** attempt), MINIMUM_TILE_PIXELS * resolution)
@@ -253,12 +216,7 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         accepted, tile_m=tile_m,
         max_distance_m=field_support.max_distance_m,
         kernel_length_m=inputs.regularized_kernel_m,
-        ridge=inputs.regularized_ridge,
-        use_observation_covariance=inputs.use_observation_covariance,
-        orthogonal_low_frequency=inputs.orthogonal_low_frequency,
-        low_frequency_degree=inputs.low_frequency_degree,
-        kernel_ridge=inputs.kernel_ridge,
-        low_frequency_penalty=inputs.low_frequency_penalty)
+        ridge=inputs.regularized_ridge)
     components = component_shifts(inputs.visible_world["panels"], field)
     return PlanimetricResult(
         field=field, records=tuple(records), accepted=tuple(accepted),

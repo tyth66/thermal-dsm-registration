@@ -52,11 +52,8 @@ class PipelineConfig:
     planimetric_highpass_sigma_m: float = PLANIMETRIC_HIGHPASS_SIGMA_M
     planimetric_field_max_distance_m: float = PLANIMETRIC_FIELD_MAX_DISTANCE_M
     planimetric_workers: int = PLANIMETRIC_WORKERS
-    adaptive_planimetric_tiling: bool = True
-    adaptive_planimetric_field: bool = True
     planimetric_regularized_kernel_m: float | None = None
     planimetric_regularized_ridge: float = 0.1
-    panel_mapping: str = "rigid"
 
     def __post_init__(self):
         if self.grid_step < 1:
@@ -120,8 +117,6 @@ def run_pipeline(config: PipelineConfig) -> dict:
             field_max_distance_m=config.planimetric_field_max_distance_m,
             warp_threads=config.planimetric_workers,
             ecc_workers=config.planimetric_workers,
-            adaptive_tiling=config.adaptive_planimetric_tiling,
-            adaptive_field_support=config.adaptive_planimetric_field,
             regularized_kernel_m=config.planimetric_regularized_kernel_m,
             regularized_ridge=config.planimetric_regularized_ridge,
         ),
@@ -129,7 +124,6 @@ def run_pipeline(config: PipelineConfig) -> dict:
         thermal_ortho=config.thermal_ortho,
         output_json=mapping_out / "visible_to_thermal_mapping_result.json",
         grid_step=config.grid_step,
-        panel_mapping=config.panel_mapping,
     ))
     return {
         "pipeline": "visible_world_planimetric_position_mapping",
@@ -154,16 +148,12 @@ def main(argv=None) -> int:
     parser.add_argument("--visible-ortho", type=Path, default=DEFAULT_VISIBLE_ORTHO)
     parser.add_argument("--thermal-ortho", type=Path, default=DEFAULT_THERMAL_ORTHO)
     parser.add_argument("--grid-step", type=int, default=16)
-    parser.add_argument("--panel-mapping", choices=("pointwise", "rigid", "similarity"),
-                        default="rigid")
     parser.add_argument("--planimetric-resolution-m", type=float, default=PLANIMETRIC_RESOLUTION_M)
     parser.add_argument("--planimetric-tile-m", type=float, default=PLANIMETRIC_TILE_M)
     parser.add_argument("--planimetric-step-m", type=float, default=PLANIMETRIC_STEP_M)
     parser.add_argument("--planimetric-highpass-sigma-m", type=float, default=PLANIMETRIC_HIGHPASS_SIGMA_M)
     parser.add_argument("--planimetric-field-max-distance-m", type=float, default=PLANIMETRIC_FIELD_MAX_DISTANCE_M)
     parser.add_argument("--planimetric-workers", type=int, default=PLANIMETRIC_WORKERS)
-    parser.add_argument("--fixed-tiling", action="store_false", dest="adaptive_planimetric_tiling")
-    parser.add_argument("--fixed-field-support", action="store_false", dest="adaptive_planimetric_field")
     parser.add_argument("--regularized-kernel-m", type=float, default=None)
     parser.add_argument("--regularized-ridge", type=float, default=0.1)
     args = parser.parse_args(argv)
@@ -181,11 +171,8 @@ def main(argv=None) -> int:
         planimetric_highpass_sigma_m=args.planimetric_highpass_sigma_m,
         planimetric_field_max_distance_m=args.planimetric_field_max_distance_m,
         planimetric_workers=args.planimetric_workers,
-        adaptive_planimetric_tiling=args.adaptive_planimetric_tiling,
-        adaptive_planimetric_field=args.adaptive_planimetric_field,
         planimetric_regularized_kernel_m=args.regularized_kernel_m,
         planimetric_regularized_ridge=args.regularized_ridge,
-        panel_mapping=args.panel_mapping,
     )
     summary = run_pipeline(config)
     print(json.dumps(summary, ensure_ascii=False, indent=1))

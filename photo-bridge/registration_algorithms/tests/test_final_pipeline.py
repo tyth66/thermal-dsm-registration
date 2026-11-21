@@ -33,7 +33,7 @@ def _planimetric_result():
             requested_tile_m=40.0, requested_step_m=20.0),
         field_support=FieldSupportPlan(
             max_distance_m=30.0, short_overlap_m=202.0,
-            requested_max_distance_m=30.0, adaptive=True),
+            requested_max_distance_m=30.0),
         attempts=({"attempt": 1, "tile_m": 40.0, "step_m": 20.0},
                   {"attempt": 2, "tile_m": 20.0, "step_m": 10.0}),
     )
@@ -144,7 +144,6 @@ def test_final_pipeline_payload_carries_planimetric_provenance(monkeypatch,
     assert support["max_distance_m"] == pytest.approx(30.0)
     assert support["short_overlap_m"] == pytest.approx(202.0)
     assert support["requested_max_distance_m"] == pytest.approx(30.0)
-    assert support["adaptive"] is True
     assert [attempt["tile_m"] for attempt in provenance["attempts"]] == [40.0, 20.0]
     assert provenance["kernel_length_m"] == pytest.approx(80.0)
     assert provenance["ridge"] == pytest.approx(0.1)

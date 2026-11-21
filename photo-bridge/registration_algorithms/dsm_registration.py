@@ -142,7 +142,6 @@ def _competing_separation(candidates, resolution, cc_margin=0.02):
 
 def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int,
-                   visible_mask=None, thermal_mask=None,
                    prior_radius_m: float = 2.0):
     """Register one tile and return it as an observation.
 
@@ -154,16 +153,12 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     its flags permit admission.
     """
     mask = joint[top:top + tile, left:left + tile]
-    mask_v = (mask if visible_mask is None
-              else visible_mask[top:top + tile, left:left + tile])
-    mask_t = (mask if thermal_mask is None
-              else thermal_mask[top:top + tile, left:left + tile])
     valid_fraction = float(mask.mean())
     if valid_fraction < 0.5:
         return None
     first = visible_high[top:top + tile, left:left + tile].astype(np.float32).copy()
     second = thermal_high[top:top + tile, left:left + tile].astype(np.float32).copy()
-    if first[mask_v].std() < 1e-6 or second[mask_t].std() < 1e-6:
+    if first[mask].std() < 1e-6 or second[mask].std() < 1e-6:
         return None
     first_n = (first - first.mean()) / (first.std() + 1e-9)
     second_n = (second - second.mean()) / (second.std() + 1e-9)
@@ -180,17 +175,14 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
 
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
-        prior=prior, radius_px=radius_px,
-        visible_mask=mask_v, thermal_mask=mask_t)
+        prior=prior, radius_px=radius_px)
     if not forward:
         return None
     reverse = masked_ecc_candidates(
         second, first, mask, resolution, top_k=1,
-        prior=(-prior[0], -prior[1]), radius_px=radius_px,
-        visible_mask=mask_t, thermal_mask=mask_v)
+        prior=(-prior[0], -prior[1]), radius_px=radius_px)
     global_forward = masked_ecc_candidates(
-        first, second, mask, resolution, top_k=1,
-        visible_mask=mask_v, thermal_mask=mask_t)
+        first, second, mask, resolution, top_k=1)
     best = forward[0]
     if global_forward:
         global_best = global_forward[0]
@@ -227,7 +219,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     else:
         margin = 1.0
         separation_m = 0.0
-    period_m = estimate_period_m(first, mask_v, resolution)
+    period_m = estimate_period_m(first, mask, resolution)
     separation_threshold = max(1.0, 0.5 * period_m) if period_m else 1.0
     ambiguous = bool((margin < AMBIGUITY_MARGIN
                       and separation_m >= separation_threshold)
@@ -294,40 +286,6 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     }
 
 
-def _joint_mode_domain(records):
-    """Two-dimensional densest-cluster domain, used as an opt-in diagnostic.
-
-    Per-axis modes can combine two different 2D clusters.  This estimator
-    selects the densest 2D bin (plus its 3x3 neighbourhood), centres on that
-    cluster, and returns a circular radius.  It returns None when the cluster
-    is too small, letting the caller fall back to the per-axis mode.
-    """
-    valid = [(float(record["dx_m"]), float(record["dy_m"])) for record in records
-             if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
-    if len(valid) < 8:
-        return None
-    values = np.asarray(valid, float)
-    x, y = values[:, 0], values[:, 1]
-    span = float(np.hypot(np.ptp(x), np.ptp(y)))
-    width = max(0.5, min(1.0, span / 20.0))
-    x_edges = np.arange(float(x.min()) - width, float(x.max()) + 2 * width, width)
-    y_edges = np.arange(float(y.min()) - width, float(y.max()) + 2 * width, width)
-    histogram, x_edges, y_edges = np.histogram2d(x, y, bins=[x_edges, y_edges])
-    ix, iy = np.unravel_index(int(np.argmax(histogram)), histogram.shape)
-    cluster = ((x >= x_edges[max(0, ix - 1)]) & (x < x_edges[min(len(x_edges) - 1, ix + 2)])
-               & (y >= y_edges[max(0, iy - 1)]) & (y < y_edges[min(len(y_edges) - 1, iy + 2)]))
-    if cluster.sum() < max(4, int(round(0.15 * len(values)))):
-        return None
-    center_x = float(np.median(x[cluster]))
-    center_y = float(np.median(y[cluster]))
-    radial = np.hypot(x[cluster] - center_x, y[cluster] - center_y)
-    scale = 1.4826 * float(np.median(np.abs(radial - np.median(radial))))
-    radius = max(DISPLACEMENT_BOUND_FLOOR_M, DISPLACEMENT_BOUND_SIGMA * scale)
-    return {"center_dx": center_x, "center_dy": center_y,
-            "bound_dx": radius, "bound_dy": radius,
-            "joint": True, "radius_m": radius}
-
-
 def _mode_axis_domain(values):
     """Densest-cluster drift estimate, with the median/MAD estimator as fallback.
 
@@ -374,61 +332,32 @@ def _robust_axis_domain(values):
                        DISPLACEMENT_BOUND_SIGMA * scale)
 
 
-def displacement_domain(records, mode: str = "mad") -> dict:
-    """Estimate the per-axis station drift domain from its observations."""
-    if mode not in ("mad", "mode", "joint"):
-        raise ValueError("domain mode must be 'mad', 'mode' or 'joint'")
-    if mode == "joint":
-        joint = _joint_mode_domain(records)
-        if joint is not None:
-            return joint
-        mode = "mode"
-    estimator = _mode_axis_domain if mode == "mode" else _robust_axis_domain
-    center_dx, bound_dx = estimator(
+def displacement_domain(records) -> dict:
+    """Estimate the per-axis station drift domain with the mode estimator."""
+    center_dx, bound_dx = _mode_axis_domain(
         [record["dx_m"] for record in records])
-    center_dy, bound_dy = estimator(
+    center_dy, bound_dy = _mode_axis_domain(
         [record["dy_m"] for record in records])
     return {"center_dx": center_dx, "bound_dx": bound_dx,
             "center_dy": center_dy, "bound_dy": bound_dy}
 
 
-def apply_displacement_domain(records, mode: str = "mad",
-                             domain_records=None):
-    """Discard observations outside the self-estimated drift domain.
-
-    domain_records optionally restricts the estimator to a subset (for example
-    consistent, non-ambiguous observations) while still filtering every input
-    record.  Returns (kept_records, stats); a non-finite dx/dy is a rejected
-    measurement, not a usable observation.
-    """
+def apply_displacement_domain(records):
+    """Discard observations outside the self-estimated per-axis drift domain."""
     records = list(records)
     measured = [record for record in records
                 if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
-    focus = measured if domain_records is None else [
-        record for record in domain_records
-        if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
-    if len(focus) < 4:
-        focus = measured
-    domain = displacement_domain(focus, mode=mode)
-    if domain.get("joint"):
-        kept = [record for record in measured
-                if np.hypot(record["dx_m"] - domain["center_dx"],
-                            record["dy_m"] - domain["center_dy"])
-                <= domain["radius_m"]]
-    else:
-        kept = [record for record in measured
-                if (domain["center_dx"] - domain["bound_dx"] <= record["dx_m"]
-                    <= domain["center_dx"] + domain["bound_dx"]
-                    and domain["center_dy"] - domain["bound_dy"] <= record["dy_m"]
-                    <= domain["center_dy"] + domain["bound_dy"])]
+    domain = displacement_domain(measured)
+    kept = [record for record in measured
+            if (domain["center_dx"] - domain["bound_dx"] <= record["dx_m"]
+                <= domain["center_dx"] + domain["bound_dx"]
+                and domain["center_dy"] - domain["bound_dy"] <= record["dy_m"]
+                <= domain["center_dy"] + domain["bound_dy"])]
     return kept, {**domain, "rejected": len(records) - len(kept)}
 
 
 def register(visible_high, thermal_high, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
-             domain_mode: str = "mad",
-             visible_mask=None, thermal_mask=None,
-             domain_use_usable: bool = False,
              prior_radius_m: float = 2.0):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
@@ -436,7 +365,7 @@ def register(visible_high, thermal_high, joint, transform, resolution,
     if height < tile or width < tile:
         print("register: raster %dx%d is smaller than one %dpx tile; no tiles"
               % (width, height, tile))
-        return apply_displacement_domain([], mode=domain_mode)
+        return apply_displacement_domain([])
     # The +1 makes the final full tile eligible when the usable extent is an
     # exact multiple of the step; without it the last row/column was dropped.
     tasks = [(row, column, top, left)
@@ -446,8 +375,6 @@ def register(visible_high, thermal_high, joint, transform, resolution,
         row, column, top, left = task
         return _register_tile(visible_high, thermal_high, joint, transform,
                               resolution, tile, row, column, top, left,
-                              visible_mask=visible_mask,
-                              thermal_mask=thermal_mask,
                               prior_radius_m=prior_radius_m)
     workers = max(1, int(workers))
     if workers > 1 and len(tasks) > 1:
@@ -456,15 +383,4 @@ def register(visible_high, thermal_high, joint, transform, resolution,
     else:
         results = [process(task) for task in tasks]
     raw = [record for record in results if record is not None]
-    # Second pass: estimate the station drift domain from all observations, or
-    # optionally only from consistent/non-ambiguous observations, then drop
-    # measurements outside it.
-    focus = None
-    if domain_use_usable:
-        usable = [record for record in raw
-                  if record.get("consistent", True)
-                  and not record.get("ambiguous", False)]
-        if len(usable) >= 4:
-            focus = usable
-    return apply_displacement_domain(raw, mode=domain_mode,
-                                     domain_records=focus)
+    return apply_displacement_domain(raw)
