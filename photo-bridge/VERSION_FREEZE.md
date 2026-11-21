@@ -1,8 +1,8 @@
 # 当前算法基线冻结（candidate-2026-11-21）
 
 状态：冻结默认结构、参数、评价集合与输出口径。  
-代码基线：24c7af0（默认模型）；V3-A profiler：861be7c；V3-B 参数支持：154c0fb；candidate_count：a7b91b7；评价器：70a5f33；可行性：f65aea1  
-测试：127 passed
+代码基线：24c7af0（默认模型）；V3-A profiler：861be7c；V3-B 参数支持：154c0fb；candidate_count：a7b91b7；评价器：70a5f33；可行性：f65aea1；几何预检查：79e5242  
+测试：129 passed
 
 ## 1. 冻结默认配置
 
@@ -145,6 +145,13 @@ valid 不得作为交付验收口径。
 - 未采用任何新参数；
 - 默认仍为 0.1 m / 10.4 m / 2 m / 1.5 m；
 - 固定评价与 prior=1 归因：V3B_FIXED_EVALUATION_247.md。
+
+## 6.3 V3-B 收官
+
+- 结论与边界：V3B_CLOSURE.md；
+- 严格足迹评价受几何条件 D_s < W_t+2b 限制；
+- 三站当前 6 m 缓冲协议均不可行；
+- 不启动 V3-C，不改变 V2。
 
 ## 7. 冻结规则
 

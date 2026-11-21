@@ -1,90 +1,126 @@
 # V3-B：三站严格足迹评价可行性报告
 
 状态：只读评价；默认 V2 未改。  
-代码基线：f65aea1  
-测试：127 passed
+代码基线：79e5242  
+测试：129 passed
 
-## 1. 协议
+## 1. 几何必要条件
 
-- 固定评价点：各站当前默认 accepted；
-- 固定四象限；
-- 方形瓦片足迹重叠排除；
-- 高通影响缓冲 b=6 m，约 4 sigma；
-- 训练候选必须位于其余三象限，且与留出评价点足迹不相交；
-- 评价点是留出象限中仍有 field_supported 的点。
+两个同尺寸轴对齐方形瓦片，宽度 W_t，中心差 (dx,dy)。  
+不相交条件：
 
-可行性字段：
+\[
+|dx|\ge W_t+2b \quad\lor\quad |dy|\ge W_t+2b
+\]
+
+因此中心距离：
+
+\[
+d_{\min}\ge W_t+2b
+\]
+
+场支撑要求：
+
+\[
+d_{\min}\le D_s
+\]
+
+所以严格隔离评价点仍可能被支持的必要条件：
+
+\[
+\boxed{D_s\ge W_t+2b}
+\]
+
+若：
+
+\[
+D_s<W_t+2b
+\]
+
+则无论观测如何分布，严格隔离后的评价点都不可能获得场支撑。
+
+## 2. 三站代入
+
+b=6 m：
+
+| 站 | W_t | W_t+2b | D_s | 几何相容 |
+|---|---:|---:|---:|---|
+| 141 | 40.0 | 52.0 | 30.0 | 否 |
+| 247 | 10.4 | 22.4 | 15.66 | 否 |
+| 290 | 35.5 | 47.5 | 30.0 | 否 |
+
+即使 b=0：
+
+| 站 | W_t | D_s | 几何相容 |
+|---|---:|---:|---|
+| 141 | 40.0 | 30.0 | 否 |
+| 247 | 10.4 | 15.66 | 是 |
+| 290 | 35.5 | 30.0 | 否 |
+
+247 允许正缓冲的最大值：
+
+\[
+b_{\max}=\frac{15.66-10.4}{2}=2.63\ \text{m}
+\]
+
+因此：
+
+- 141/290 在 b=0 时已经几何不相容；
+- 247 在 b>2.63 m 后几何不相容；
+- 三站 6 m 缓冲出现 0 支持点是确定性结果，不是观测稀疏的偶然现象。
+
+## 3. 可行性报告
+
+| 站 | reference | 每折训练数 | 支持点 | 有效折 | reason |
+|---|---:|---|---:|---:|---|
+| 141 | 89 | 40 / 56 / 37 / 48 | 0 | 0 | geometric_incompatibility |
+| 247 | 39 | 6 / 26 / 6 / 32 | 0 | 0 | geometric_incompatibility |
+| 290 | 31 | 15 / 13 / 11 / 31 | 0 | 0 | geometric_incompatibility |
+
+字段：
 
 - reference_count；
-- footprint_disjoint_count：留出折中剩余训练观测的最小值；
+- footprint_disjoint_count；
 - buffered_supported_count；
 - valid_fold_count；
 - common_supported_count；
 - reference_source；
+- buffer_m；
+- feasibility_reason；
 - evaluation_feasible。
 
-feasibility 规则：
+## 4. 预检查
+
+新增 geometry_precheck(support_m, tile_m, buffer_m)：
+
+- 返回 required_min_distance_m；
+- 返回 geometrically_compatible；
+- evaluation_feasibility 在训练前即可返回 geometric_incompatibility；
+- 不需要运行 DSM 配准即可判定。
+
+## 5. 解释边界
+
+- 这个条件只适用于当前同尺寸、轴对齐方形瓦片、中心距离支撑规则；
+- 若未来采用不同窗口形状、不同支撑定义或外推评价，必须重新推导；
+- 这不是“三站永远无法评价”，而是“当前协议不可执行”；
+- 不能为了 CV 能算而临时扩大 D_s，否则评价对象变为外推。
+
+## 6. 当前裁决
 
 \[
-\text{feasible}=
-[\text{reference}>0]
-\land[\text{footprint}>0]
-\land[\text{supported}>0]
-\land[\text{valid\_folds}=\text{folds}]
-\land[\text{common}>0]
+\boxed{\text{严格评价不可执行}\Rightarrow\text{保留 V2}}
 \]
 
-这是最低执行条件，不是统计功效证明。
+- V2 继续冻结；
+- 不再扩大 Tile/Prior/Grid/Sigma 搜索；
+- V3-C 不启动；
+- 需要新数据或新评价设计才重启参数自适应研究。
 
-## 2. 结果
+## 7. 实现与测试
 
-| 站 | accepted/reference | tile | 每折训练数 | 支持点 | 有效折 | feasible |
-|---|---:|---:|---|---:|---:|---|
-| 141 | 89 | 40.0 m | 40 / 56 / 37 / 48 | 0 | 0 | false |
-| 247 | 39 | 10.4 m | 6 / 26 / 6 / 32 | 0 | 0 | false |
-| 290 | 31 | 35.5 m | 15 / 13 / 11 / 31 | 0 | 0 | false |
-
-290 的第 4 折留出点为 0，因此实际有效折更少。
-
-reference_source：V2 默认 accepted ECC 观测。  
-buffer_m：6.0。
-
-## 3. 解释
-
-- 6 m 缓冲后，三站都没有任何留出点仍被场支持；
-- 247 是最稀疏的，但 141/290 也失败，说明这不是 247 个例；
-- 这是当前“tile/step + 场支撑 + 4 sigma 缓冲”协议下的结论，不是“这些站永远无法评价”；
-- 不能为了让评价能算而临时扩大 D_s，否则评价对象变成外推；
-- 当前严格足迹协议不可执行，不能用于参数选择。
-
-## 4. 对 V3 的含义
-
-V3 必须把“参数能否被可靠比较”作为输出：
-
-\[
-\text{data}\rightarrow\text{evaluation feasibility}\rightarrow
-\begin{cases}
-\text{allow adaptive choice}\\
-\text{keep frozen V2}
-\end{cases}
-\]
-
-对这三站，当前应输出：
-
-\[
-\boxed{\text{参数选择证据不足}\Rightarrow\text{保留 V2}}
-\]
-
-## 5. 下一步
-
-1. 若继续严格评价，需要提高观测密度或改变评价单元；
-2. 141/290 可先做 buffer 0/2/6 敏感性，确认是否只是缓冲过严；
-3. 用合成已知位移验证变换等变性，但不能替代真实几何；
-4. 不再扩大 Tile/Prior/Grid/Sigma 搜索；
-5. V3-C 不启动。
-
-## 6. 实现
-
-- 评价器：registration_algorithms/evaluation.py
-- 可行性报告辅助：evaluation_feasibility
-- 测试：127 passed
+- evaluation.py：geometry_precheck，feasibility_reason；
+- 测试：129 passed；
+- 纯数学回归用例：
+  - 247 b=6：required 22.4 > 15.66，不可行；
+  - 边界 22.4 = 22.4，可行；
+  - 247 b=0/2 可行，b=6 不可行。

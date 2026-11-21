@@ -2,9 +2,10 @@
 
 状态：按用户决定，接受“保守候选”，停止继续调场模型。  
 代码基线：24c7af0  
-测试：127 passed  
+测试：129 passed  
 数学模型审阅：MATH_MODEL_AUDIT.md  
 V3-B 247 实验：V3B_247_OBSERVATION_PARAMETERS.md  
+V3-B 收官：V3B_CLOSURE.md  
 V3-B 固定评价：V3B_FIXED_EVALUATION_247.md  
 冻结基线：VERSION_FREEZE.md
 日期：2026-11-21
