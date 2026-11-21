@@ -4,6 +4,7 @@
 代码基线：24c7af0  
 测试：121 passed  
 数学模型审阅：MATH_MODEL_AUDIT.md  
+V3-B 247 实验：V3B_247_OBSERVATION_PARAMETERS.md  
 冻结基线：VERSION_FREEZE.md
 日期：2026-11-21
 
