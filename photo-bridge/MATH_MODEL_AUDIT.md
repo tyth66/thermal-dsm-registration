@@ -1,7 +1,7 @@
 # DSM–DSM 配准 V2 数学模型审阅：核对与修正记录
 
-审阅基线：a201c7a  
-测试：115 passed
+审阅基线：ae0519d  
+测试：116 passed
 
 ## 1. 六个问题的核对结果
 
@@ -57,9 +57,23 @@
 处理：
 
 - 默认不改；
-- 增加两个诊断变量：
-  - 二维主簇占比；
-  - 域估计只用 usable 观测 vs 全部域内观测的 A/B。
+- 已实现 domain_use_usable，opt-in；
+- 已做 usable-only vs all 的 A/B：
+
+| 站 | all 平均误差 | usable-only | accepted |
+|---|---|---|---|
+| 141 | 0.1988 | 0.2156 | 89 / 91 |
+| 247 | 0.5068 | 0.5068 | 39 / 39 |
+| 290 | 0.1825 | 0.1825 | 31 / 31 |
+
+141 的 usable-only 多收 2 条但误差变差；247/290 完全不变。默认仍用全部域内观测。
+
+- 已实现 competing_separation_m 纯诊断：
+  - 141：P95 1.51 m，0 个 <0.6 m；
+  - 247：P95 2.61 m，0 个 <0.6 m；
+  - 290：P95 1.12 m，0 个 <0.6 m。
+  当前没有观测到“<1 m 分离但高竞争”的盲区样本。
+
 - P3 用同一锚点比较 MAD/mode/joint，不只比内部留出。
 
 ## 4. component_conservative：已修正
@@ -151,14 +165,13 @@ min_{theta,c} ||W^(1/2)(t-X theta-Kc)||^2 + lambda||c||^2
 - 解析 Jacobian vs 中心差分；
 - 合成端到端、噪声/nodata、mode 能力边界。
 
-当前 114 tests passed。
+当前 116 tests passed。
 
 ## 9. 仍需 A/B 的项目
 
-1. 域估计只用 usable 观测 vs 全部域内观测；
-3. 逐轴 mode vs joint 的二维簇占比与覆盖；
-4. 小分离竞争峰诊断 d_competing；
-5. P3 独立锚点上的 E_geo / C_supported。
+1. 逐轴 mode vs joint 的二维簇占比与覆盖；
+2. P3 独立锚点上的 E_geo / C_supported；
+3. 若 P3 需要，再对 141 做 usable-only 的站点特例。
 
 在这些完成前，不改变默认场模型。
 
