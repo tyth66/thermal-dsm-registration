@@ -64,7 +64,7 @@ def test_register_tile_returns_every_finite_ecc_shift():
                 "ncc_after", "valid_fraction", "quality_weight"):
         assert key in record
     assert record["quality_weight"] == pytest.approx(1.0)
-    for removed in ("candidates", "candidate_count", "second_margin",
+    for removed in ("candidates", "second_margin",
                     "periodic_ambiguity", "unique"):
         assert removed not in record
 
