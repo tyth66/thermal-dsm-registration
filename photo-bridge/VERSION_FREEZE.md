@@ -143,7 +143,8 @@ valid 不得作为交付验收口径。
 - 第一轮结果：V3B_247_OBSERVATION_PARAMETERS.md；
 - 只做 247 的 tile/prior/grid/sigma 敏感性；
 - 未采用任何新参数；
-- 默认仍为 0.1 m / 10.4 m / 2 m / 1.5 m。
+- 默认仍为 0.1 m / 10.4 m / 2 m / 1.5 m；
+- 固定评价与 prior=1 归因：V3B_FIXED_EVALUATION_247.md。
 
 ## 7. 冻结规则
 
