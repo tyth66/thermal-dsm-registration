@@ -1,9 +1,10 @@
 # 保守候选模型交付说明
 
 状态：按用户决定，接受“保守候选”，停止继续调场模型。  
-代码基线：ae0519d  
-测试：116 passed  
-数学模型审阅：MATH_MODEL_AUDIT.md
+代码基线：fbb25b2  
+测试：119 passed  
+数学模型审阅：MATH_MODEL_AUDIT.md  
+冻结基线：VERSION_FREEZE.md
 日期：2026-11-21
 
 ## 1. 定位
