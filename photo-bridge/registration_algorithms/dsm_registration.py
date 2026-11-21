@@ -142,7 +142,8 @@ def _competing_separation(candidates, resolution, cc_margin=0.02):
 
 def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int,
-                   visible_mask=None, thermal_mask=None):
+                   visible_mask=None, thermal_mask=None,
+                   prior_radius_m: float = 2.0):
     """Register one tile and return it as an observation.
 
     The ECC search is computed over the candidate-dependent common mask, not
@@ -175,7 +176,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
         prior = (2.0 * coarse_x, 2.0 * coarse_y)
     else:
         prior = (0.0, 0.0)
-    radius_px = max(8.0, 2.0 / resolution)
+    radius_px = max(8.0, float(prior_radius_m) / resolution)
 
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
@@ -425,7 +426,8 @@ def register(visible_high, thermal_high, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
              domain_mode: str = "mad",
              visible_mask=None, thermal_mask=None,
-             domain_use_usable: bool = False):
+             domain_use_usable: bool = False,
+             prior_radius_m: float = 2.0):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
@@ -443,7 +445,8 @@ def register(visible_high, thermal_high, joint, transform, resolution,
         return _register_tile(visible_high, thermal_high, joint, transform,
                               resolution, tile, row, column, top, left,
                               visible_mask=visible_mask,
-                              thermal_mask=thermal_mask)
+                              thermal_mask=thermal_mask,
+                              prior_radius_m=prior_radius_m)
     workers = max(1, int(workers))
     if workers > 1 and len(tasks) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:

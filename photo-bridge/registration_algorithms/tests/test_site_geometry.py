@@ -34,6 +34,8 @@ def test_profile_site_reports_period_coverage_and_texture(tmp_path):
     assert result["texture"]["visible"]["std"] > 0.0
     assert result["period_m"]["visible"] is not None
     assert result["period_m"]["visible"] == pytest.approx(4.0, abs=0.5)
+    assert result["dimensionless"]["tile_period"] > 0.0
+    assert result["dimensionless"]["prior_period"] > 0.0
 
 
 def test_semivariogram_returns_sill_and_correlation_length():

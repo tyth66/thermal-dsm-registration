@@ -148,6 +148,16 @@ def profile_site(visible_dsm, thermal_dsm, resolution_m=0.1,
             "thermal": _texture_stats(thermal_high, thermal_valid),
         },
         "period_m": {"visible": period_visible, "thermal": period_thermal},
+        "period_diagnostics": {
+            "visible_at_floor": bool(period_visible is not None
+                                     and period_visible <= 2.0001),
+            "thermal_available": bool(period_thermal is not None),
+        },
+        "dimensionless": (None if period_visible is None else {
+            "tile_period": float(plan.tile_m / period_visible),
+            "prior_period": float(2.0 / period_visible),
+            "sigma_period": float(1.5 / period_visible),
+        }),
         "tiling": {"tile_m": float(plan.tile_m), "step_m": float(plan.step_m),
                    "support_m": float(support.max_distance_m)},
         "component_layout": None,

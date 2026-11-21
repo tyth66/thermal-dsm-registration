@@ -34,6 +34,7 @@ class PlanimetricInputs:
     tile_m: float = 40.0
     step_m: float = 20.0
     highpass_sigma_m: float = 1.5
+    prior_radius_m: float = 2.0
     field_max_distance_m: float = 30.0
     warp_threads: int = 8
     ecc_workers: int = 8
@@ -52,7 +53,8 @@ class PlanimetricInputs:
 
 
 PLANIMETRIC_SCALE_PARAMETERS = ("resolution_m", "tile_m", "step_m",
-                                "highpass_sigma_m", "field_max_distance_m")
+                                "highpass_sigma_m", "prior_radius_m",
+                                "field_max_distance_m")
 
 
 def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
@@ -205,6 +207,7 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
             tile_m, step_m, inputs.ecc_workers,
             domain_mode=inputs.domain_mode,
             domain_use_usable=inputs.domain_use_usable,
+            prior_radius_m=inputs.prior_radius_m,
             visible_mask=(visible_valid if inputs.mask_mode == "separate"
                           else None),
             thermal_mask=(thermal_valid if inputs.mask_mode == "separate"
