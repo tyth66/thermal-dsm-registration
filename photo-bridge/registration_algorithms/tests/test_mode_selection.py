@@ -65,3 +65,15 @@ def test_mad_domain_is_inflated_by_balanced_alias_cluster():
     mode = displacement_domain(rows, mode="mode")
     assert mad["bound_dx"] > mode["bound_dx"]
     assert mad["bound_dx"] > 2.0
+
+
+def test_domain_can_be_estimated_from_usable_subset():
+    rows = _records([(0.2, 0.1, 50), (5.0, 0.1, 50)])
+    usable = rows[:50]
+    domain = displacement_domain(usable, mode="mode")
+    kept, stats = apply_displacement_domain(
+        rows, mode="mode", domain_records=usable)
+    assert domain["center_dx"] == pytest.approx(0.2, abs=0.1)
+    assert len(kept) == 50
+    assert stats["rejected"] == 50
+

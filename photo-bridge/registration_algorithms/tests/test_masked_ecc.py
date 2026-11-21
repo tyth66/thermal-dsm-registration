@@ -72,6 +72,7 @@ def test_register_tile_records_observability_fields():
     assert record is not None
     for key in ("cc_best", "cc_second", "margin", "separation_m", "period_m",
                 "reverse_cc", "fb_error_m", "consistent", "ambiguous",
+                "competing_separation_m",
                 "sigma_e", "sigma_n", "sigma_en", "uniqueness"):
         assert key in record
     assert record["sigma_e"] > 0.0

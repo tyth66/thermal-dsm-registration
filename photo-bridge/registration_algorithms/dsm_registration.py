@@ -221,6 +221,13 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                      or alias_conflict)
     uniqueness = float(np.clip(margin / AMBIGUITY_MARGIN, 0.0, 1.0))
 
+    best_cc = float(forward[0]["cc"])
+    close = [item for item in forward if item["cc"] >= best_cc - 0.02]
+    competing_separation_m = max(
+        (float(np.hypot(item["sx"] - forward[0]["sx"],
+                        item["sy"] - forward[0]["sy"]) * resolution)
+         for item in close), default=0.0)
+
     scores = np.asarray([item["cc"] for item in forward], float)
     shifts_px = np.asarray([[item["sx"], item["sy"]] for item in forward], float)
     logits = SOFTMAX_BETA * (scores - float(np.max(scores)))
@@ -261,6 +268,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
         "cc_second": float(forward[1]["cc"]) if len(forward) > 1 else float(best["cc"]),
         "margin": margin,
         "separation_m": separation_m,
+        "competing_separation_m": competing_separation_m,
         "period_m": (float(period_m) if period_m is not None else None),
         "reverse_cc": reverse_cc,
         "fb_error_m": fb_error,
@@ -374,19 +382,24 @@ def displacement_domain(records, mode: str = "mad") -> dict:
             "center_dy": center_dy, "bound_dy": bound_dy}
 
 
-def apply_displacement_domain(records, mode: str = "mad"):
+def apply_displacement_domain(records, mode: str = "mad",
+                             domain_records=None):
     """Discard observations outside the self-estimated drift domain.
 
-    Returns (kept_records, stats); stats carries the estimated per-axis
-    centre/bound plus the number of discarded invalid measurements.  A record
-    with a non-finite dx/dy is an invalid measurement (same semantics as a
-    periodic self-similarity alias): it is excluded from the domain estimate
-    and counted as rejected instead of being treated as a usable observation.
+    domain_records optionally restricts the estimator to a subset (for example
+    consistent, non-ambiguous observations) while still filtering every input
+    record.  Returns (kept_records, stats); a non-finite dx/dy is a rejected
+    measurement, not a usable observation.
     """
     records = list(records)
     measured = [record for record in records
                 if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
-    domain = displacement_domain(measured, mode=mode)
+    focus = measured if domain_records is None else [
+        record for record in domain_records
+        if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
+    if len(focus) < 4:
+        focus = measured
+    domain = displacement_domain(focus, mode=mode)
     if domain.get("joint"):
         kept = [record for record in measured
                 if np.hypot(record["dx_m"] - domain["center_dx"],
@@ -404,7 +417,8 @@ def apply_displacement_domain(records, mode: str = "mad"):
 def register(visible_high, thermal_high, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
              domain_mode: str = "mad",
-             visible_mask=None, thermal_mask=None):
+             visible_mask=None, thermal_mask=None,
+             domain_use_usable: bool = False):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
@@ -430,6 +444,15 @@ def register(visible_high, thermal_high, joint, transform, resolution,
     else:
         results = [process(task) for task in tasks]
     raw = [record for record in results if record is not None]
-    # Second pass: the station drift domain is estimated from every produced
-    # observation, then only measurements outside that domain are dropped.
-    return apply_displacement_domain(raw, mode=domain_mode)
+    # Second pass: estimate the station drift domain from all observations, or
+    # optionally only from consistent/non-ambiguous observations, then drop
+    # measurements outside it.
+    focus = None
+    if domain_use_usable:
+        usable = [record for record in raw
+                  if record.get("consistent", True)
+                  and not record.get("ambiguous", False)]
+        if len(usable) >= 4:
+            focus = usable
+    return apply_displacement_domain(raw, mode=domain_mode,
+                                     domain_records=focus)

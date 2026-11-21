@@ -42,6 +42,7 @@ class PlanimetricInputs:
     regularized_kernel_m: float | None = None
     regularized_ridge: float = 0.1
     domain_mode: str = "mode"
+    domain_use_usable: bool = False
     mask_mode: str = "joint"
     use_observation_covariance: bool = False
     orthogonal_low_frequency: bool = False
@@ -203,6 +204,7 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
             visible_high, thermal_high, joint, transform, resolution,
             tile_m, step_m, inputs.ecc_workers,
             domain_mode=inputs.domain_mode,
+            domain_use_usable=inputs.domain_use_usable,
             visible_mask=(visible_valid if inputs.mask_mode == "separate"
                           else None),
             thermal_mask=(thermal_valid if inputs.mask_mode == "separate"
