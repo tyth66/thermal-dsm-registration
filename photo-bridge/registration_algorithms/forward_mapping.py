@@ -166,6 +166,12 @@ def panel_points(visible_world: dict, field: PlanimetricField,
             row["component_target_valid"] = int(component_target_valid)
             row["low_confidence"] = int(not (component_field_supported
                                              and component_target_valid))
+            row["component_conservative_valid"] = int(
+                component_mapped and component_field_supported
+                and component_target_valid)
+            row["conservative_valid"] = int(
+                row["source_valid"] and row["field_supported"]
+                and row["target_valid"])
         rows.extend(panel_rows)
     return rows
 

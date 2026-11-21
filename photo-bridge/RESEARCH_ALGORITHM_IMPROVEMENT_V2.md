@@ -1205,3 +1205,23 @@ eta=0.75-0.97 说明 RBF 里有强低频成分，但不能推出这些成分应�
 - **多数 alias 场景在数学上不可由内部域单独解决**；
 - 合成测试能验证“算法行为边界”，不能替代真实几何锚点；
 - 当前 109 tests passed。
+
+### 19.11 保守有效性输出
+
+新增面板行字段：
+
+- conservative_valid = source_valid AND field_supported AND target_valid；
+- component_conservative_valid = component_source_valid AND component_field_supported AND component_target_valid。
+
+新增摘要：
+
+- panel_points_conservative_valid；
+- panel_ids_conservative_valid。
+
+247 验证：
+
+- panel_points 2450，conservative 2450，与 valid 相同；
+- 说明当前 247 面板都有源/场/目标支撑；
+- 对 target nodata 或 field unsupported 的数据，conservative 会低于 valid，起到 fail-closed 作用。
+
+默认 valid 策略未改；conservative 是诊断/保守输出字段。109 tests passed。

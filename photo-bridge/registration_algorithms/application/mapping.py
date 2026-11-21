@@ -61,6 +61,11 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
     valid_panel = [row for row in panel_rows if row["valid"]]
     fully_valid_panel_ids = {panel_id for panel_id, rows in panel_grouped.items()
                              if len(rows) == 5 and all(row["valid"] for row in rows)}
+    conservative_panel = [row for row in panel_rows if row.get("conservative_valid")]
+    conservative_panel_ids = {
+        panel_id for panel_id, rows in panel_grouped.items()
+        if len(rows) == 5
+        and sum(int(row.get("conservative_valid", 0)) for row in rows) >= 3}
     all_original_nodata_panel_ids = {
         panel_id for panel_id, rows in panel_grouped.items()
         if len(rows) == 5 and not any(row["naive_valid"] for row in rows)
@@ -78,10 +83,12 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         "panel_points": len(panel_rows),
         "panels_total": len(inputs.visible_world["panels"]),
         "panel_points_valid": len(valid_panel),
+        "panel_points_conservative_valid": len(conservative_panel),
         "panel_points_corrected_valid": sum(row["corrected_valid"] for row in panel_rows),
         "panel_points_unsupported": sum(not row["field_valid"] for row in panel_rows),
         "panel_points_target_nodata": sum(1 - row["corrected_valid"] for row in panel_rows),
         "panel_ids_valid": len(fully_valid_panel_ids),
+        "panel_ids_conservative_valid": len(conservative_panel_ids),
         "panel_ids_all_original_nodata": len(all_original_nodata_panel_ids),
         "panel_ids_incomplete": sum(len(rows) != 5 for rows in panel_grouped.values()),
         "field_max_distance_m": (field.max_distance_m if inputs.field_max_distance_m is None
