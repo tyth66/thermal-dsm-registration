@@ -1,7 +1,7 @@
 # 当前算法基线冻结（candidate-2026-11-21）
 
 状态：冻结默认结构、参数、评价集合与输出口径。  
-代码基线：fbb25b2  
+代码基线：24c7af0  
 测试：119 passed
 
 ## 1. 冻结默认配置
@@ -104,10 +104,22 @@ valid 不得作为交付验收口径。
 
 评测脚本：
 
-- /tmp/pb/validate_joint.py（本次会话的临时 13 方案脚本；若需长期回归，应移入仓库）
-- outputs/final_candidate/summary.json（冻结可视化口径）
+- tools/qa_candidate_baseline.py（仓库内，13 方案，输出 JSON）
+- 参考输出：outputs/final_candidate/baseline_eval.json（本地生成，outputs 路径可能被忽略）
 
-注意：/tmp 脚本不是持久制品；冻结版本若用于长期回归，必须把评测脚本和输入清单移入仓库。
+命令：
+
+    python3 tools/qa_candidate_baseline.py \
+      --station 141:VISIBLE_DSM:THERMAL_DSM \
+      --station 247:VISIBLE_DSM:THERMAL_DSM \
+      --station 290:VISIBLE_DSM:THERMAL_DSM \
+      --out outputs/final_candidate/baseline_eval.json
+
+期望均值：
+
+- 141: 0.2094 m，accepted 89；
+- 247: 0.5017 m，accepted 39；
+- 290: 0.1956 m，accepted 31。
 
 ## 6. 能力边界
 

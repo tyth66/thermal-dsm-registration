@@ -1,6 +1,6 @@
 {
  "version": "candidate-2026-11-21",
- "commit": "fbb25b2",
+ "commit": "24c7af0",
  "tests": 119,
  "default": {
   "domain_mode": "mode",
