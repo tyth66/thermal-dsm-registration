@@ -65,7 +65,7 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
     conservative_panel_ids = {
         panel_id for panel_id, rows in panel_grouped.items()
         if len(rows) == 5
-        and sum(int(row.get("conservative_valid", 0)) for row in rows) >= 3}
+        and any(int(row.get("component_conservative_valid", 0)) for row in rows)}
     all_original_nodata_panel_ids = {
         panel_id for panel_id, rows in panel_grouped.items()
         if len(rows) == 5 and not any(row["naive_valid"] for row in rows)

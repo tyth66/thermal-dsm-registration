@@ -59,6 +59,16 @@ def _apply_similarity(source: np.ndarray, transform):
                             target_center[1] + b * x + a * y))
 
 
+def _component_conservative(panel_rows):
+    """A panel is delivery-conservative only with a common valid core."""
+    center = next((row for row in panel_rows if row["point"] == "center"), None)
+    corners = [row for row in panel_rows if row["point"] != "center"]
+    if center is None or len(corners) != 4:
+        return False
+    return bool(center["conservative_valid"]
+                and sum(row["conservative_valid"] for row in corners) >= 2)
+
+
 def panel_points(visible_world: dict, field: PlanimetricField,
                  visible_transform, thermal_transform,
                  thermal_width: int, thermal_height: int,
@@ -160,18 +170,18 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                                          and corner_supported >= 3)
         component_target_valid = bool(sum(row["target_valid"] for row in panel_rows) >= 3)
         for row in panel_rows:
+            row["conservative_valid"] = int(
+                row["source_valid"] and row["field_supported"]
+                and row["target_valid"])
+        component_conservative_valid = _component_conservative(panel_rows)
+        for row in panel_rows:
             row["valid"] = int(component_mapped)
             row["component_source_valid"] = int(component_mapped)
             row["component_field_supported"] = int(component_field_supported)
             row["component_target_valid"] = int(component_target_valid)
             row["low_confidence"] = int(not (component_field_supported
                                              and component_target_valid))
-            row["component_conservative_valid"] = int(
-                component_mapped and component_field_supported
-                and component_target_valid)
-            row["conservative_valid"] = int(
-                row["source_valid"] and row["field_supported"]
-                and row["target_valid"])
+            row["component_conservative_valid"] = int(component_conservative_valid)
         rows.extend(panel_rows)
     return rows
 

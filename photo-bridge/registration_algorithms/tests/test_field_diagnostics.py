@@ -100,3 +100,23 @@ def test_soft_low_frequency_penalty_reduces_coupling_without_destroying_field():
     assert np.all(np.isfinite(delta_e))
     assert np.all(np.isfinite(delta_n))
 
+
+
+def test_analytic_jacobian_matches_finite_difference():
+    rows, _, _ = _synthetic_rows()
+    field = fit_regularized_field(rows, tile_m=10.0, max_distance_m=30.0,
+                                  kernel_length_m=20.0, ridge=0.1)
+    point = np.array([[12.0, 17.0]])
+    analytic = field.jacobian(point[:, 0], point[:, 1])["jacobian"][0]
+    step = 1e-4
+    numeric = np.zeros((2, 2))
+    for axis in range(2):
+        plus = point.copy(); minus = point.copy()
+        plus[0, axis] += step; minus[0, axis] -= step
+        de_p, dn_p, _, _ = field.evaluate(plus[:, 0], plus[:, 1])
+        de_m, dn_m, _, _ = field.evaluate(minus[:, 0], minus[:, 1])
+        f_plus = plus[0] + np.array([de_p[0], dn_p[0]])
+        f_minus = minus[0] + np.array([de_m[0], dn_m[0]])
+        numeric[:, axis] = (f_plus - f_minus) / (2.0 * step)
+    assert analytic == pytest.approx(numeric, abs=1e-6)
+

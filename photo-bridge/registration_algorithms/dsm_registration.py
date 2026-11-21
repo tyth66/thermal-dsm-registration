@@ -122,6 +122,12 @@ def ecc(first, second, warp=None):
         return float("nan"), float("nan"), float("nan")
 
 
+def pixel_covariance_to_world(covariance_px, resolution):
+    """Map pixel-shift covariance to EN metres: (dx,dy)=(r*sx,-r*sy)."""
+    flip = np.diag([float(resolution), -float(resolution)])
+    return flip @ np.asarray(covariance_px, float) @ flip.T
+
+
 def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int):
     """Register one tile and return it as an observation.
@@ -214,7 +220,8 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     pi /= max(float(np.sum(pi)), 1e-12)
     mean_shift = pi @ shifts_px
     centered = shifts_px - mean_shift
-    covariance_candidate = (centered.T * pi) @ centered * resolution ** 2
+    covariance_px = (centered.T * pi) @ centered
+    covariance_candidate = pixel_covariance_to_world(covariance_px, resolution)
     covariance_fb = (fb_error ** 2 if np.isfinite(fb_error) else 1.0) * np.eye(2)
     covariance = covariance_candidate + covariance_fb + (SIGMA0_M ** 2) * np.eye(2)
     sigma_e = float(np.sqrt(max(covariance[0, 0], 0.0)))

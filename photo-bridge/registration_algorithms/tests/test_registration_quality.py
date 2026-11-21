@@ -245,3 +245,14 @@ def test_joint_mode_rejects_two_dimensional_alias():
     assert (5.0, 5.0) not in kept_pairs
     assert stats["rejected"] == 13
 
+
+
+def test_pixel_covariance_to_world_flips_cross_term():
+    from registration_algorithms.dsm_registration import pixel_covariance_to_world
+    covariance_px = np.array([[4.0, 1.0], [1.0, 9.0]])
+    covariance_en = pixel_covariance_to_world(covariance_px, 0.1)
+    assert covariance_en[0, 0] == pytest.approx(0.04)
+    assert covariance_en[1, 1] == pytest.approx(0.09)
+    assert covariance_en[0, 1] == pytest.approx(-0.01)
+    assert covariance_en[1, 0] == pytest.approx(-0.01)
+
