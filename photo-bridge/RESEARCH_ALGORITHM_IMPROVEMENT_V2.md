@@ -1225,3 +1225,21 @@ eta=0.75-0.97 说明 RBF 里有强低频成分，但不能推出这些成分应�
 - 对 target nodata 或 field unsupported 的数据，conservative 会低于 valid，起到 fail-closed 作用。
 
 默认 valid 策略未改；conservative 是诊断/保守输出字段。109 tests passed。
+
+### 19.12 合成端到端测试
+
+新增 test_synthetic_pipeline.py：
+
+- 128×128 随机纹理 + 两个强特征；
+- 热像整体 roll (2,-3) px，对应已知位移 (-0.3,-0.2) m；
+- 4 m tile / 2 m step；
+- 跑 register + 场拟合。
+
+结果：
+
+- 25 个记录；
+- domain 中心：(-0.3000,-0.1999) m；
+- 场在记录点的平均误差 0.00037 m，最大 0.00075 m；
+- 测试阈值 0.02 m，110 tests passed。
+
+结论：在非周期、无噪声、无 alias 的合成场景下，P0→场拟合链路能恢复已知位移。它验证实现正确性，不验证真实 alias/几何。
