@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from registration_algorithms.evaluation import (
+    evaluation_feasibility,
     footprint_overlap_matrix,
     paired_supported_errors,
     quadrant_ids,
@@ -45,3 +46,13 @@ def test_paired_errors_use_only_common_supported_points():
 
 def test_single_candidate_margin_is_not_observable():
     assert uniqueness_observable([1, 2, 3]).tolist() == [False, True, True]
+
+
+def test_evaluation_feasibility_requires_supported_folds():
+    blocked = evaluation_feasibility(
+        39, 26, 0, 0, 0, 4, "prior2 accepted", 6.0)
+    assert blocked["evaluation_feasible"] is False
+    viable = evaluation_feasibility(
+        39, 26, 20, 4, 12, 4, "prior2 accepted", 6.0)
+    assert viable["evaluation_feasible"] is True
+

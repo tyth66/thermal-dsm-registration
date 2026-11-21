@@ -59,3 +59,33 @@ def paired_supported_errors(error_a, support_a, error_b, support_b):
 def uniqueness_observable(candidate_count):
     """A margin is only observable when at least two candidates exist."""
     return np.asarray(candidate_count, int) >= 2
+
+
+def evaluation_feasibility(reference_count, footprint_disjoint_count,
+                           buffered_supported_count, valid_fold_count,
+                           common_supported_count, folds,
+                           reference_source, buffer_m):
+    """Describe whether a fixed-footprint evaluation can produce comparisons.
+
+    Feasible here means every fold produced at least one supported held-out
+    prediction and at least one common supported point exists.  It is a
+    minimum execution condition, not a claim of statistical power.
+    """
+    feasible = bool(
+        int(reference_count) > 0
+        and int(footprint_disjoint_count) > 0
+        and int(buffered_supported_count) > 0
+        and int(valid_fold_count) == int(folds)
+        and int(common_supported_count) > 0)
+    return {
+        "reference_count": int(reference_count),
+        "footprint_disjoint_count": int(footprint_disjoint_count),
+        "buffered_supported_count": int(buffered_supported_count),
+        "valid_fold_count": int(valid_fold_count),
+        "common_supported_count": int(common_supported_count),
+        "folds": int(folds),
+        "reference_source": str(reference_source),
+        "buffer_m": float(buffer_m),
+        "evaluation_feasible": feasible,
+    }
+
