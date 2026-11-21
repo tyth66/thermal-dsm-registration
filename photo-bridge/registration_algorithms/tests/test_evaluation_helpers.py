@@ -5,6 +5,7 @@ import pytest
 from registration_algorithms.evaluation import (
     evaluation_feasibility,
     footprint_overlap_matrix,
+    geometry_precheck,
     paired_supported_errors,
     quadrant_ids,
     training_mask,
@@ -55,4 +56,21 @@ def test_evaluation_feasibility_requires_supported_folds():
     viable = evaluation_feasibility(
         39, 26, 20, 4, 12, 4, "prior2 accepted", 6.0)
     assert viable["evaluation_feasible"] is True
+
+
+
+def test_geometry_precheck_matches_support_and_isolated_distance():
+    blocked = geometry_precheck(15.66, 10.4, 6.0)
+    assert blocked["geometrically_compatible"] is False
+    assert blocked["required_min_distance_m"] == pytest.approx(22.4)
+    boundary = geometry_precheck(22.4, 10.4, 6.0)
+    assert boundary["geometrically_compatible"] is True
+
+
+def test_evaluation_feasibility_reports_geometric_block():
+    result = evaluation_feasibility(
+        39, 6, 0, 0, 0, 4, "prior2 accepted", 6.0,
+        support_m=15.66, tile_m=10.4)
+    assert result["evaluation_feasible"] is False
+    assert result["feasibility_reason"] == "geometric_incompatibility"
 

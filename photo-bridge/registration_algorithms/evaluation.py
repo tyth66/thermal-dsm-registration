@@ -61,23 +61,57 @@ def uniqueness_observable(candidate_count):
     return np.asarray(candidate_count, int) >= 2
 
 
+def geometry_precheck(support_m, tile_m, buffer_m):
+    """Necessary condition for a footprint-isolated point to be supported.
+
+    Axis-aligned tile footprints are disjoint only when at least one axis has
+    |delta| >= tile + 2*buffer, hence center distance >= tile + 2*buffer.
+    If the support radius is smaller, no isolated held-out point can qualify.
+    """
+    required = float(tile_m) + 2.0 * float(buffer_m)
+    return {
+        "required_min_distance_m": required,
+        "support_m": float(support_m),
+        "tile_m": float(tile_m),
+        "buffer_m": float(buffer_m),
+        "geometrically_compatible": bool(float(support_m) >= required),
+    }
+
+
 def evaluation_feasibility(reference_count, footprint_disjoint_count,
                            buffered_supported_count, valid_fold_count,
                            common_supported_count, folds,
-                           reference_source, buffer_m):
+                           reference_source, buffer_m,
+                           support_m=None, tile_m=None):
     """Describe whether a fixed-footprint evaluation can produce comparisons.
 
-    Feasible here means every fold produced at least one supported held-out
-    prediction and at least one common supported point exists.  It is a
-    minimum execution condition, not a claim of statistical power.
+    Feasible here means the geometry is compatible and every fold produced at
+    least one supported held-out prediction with a common supported point.
+    It is a minimum execution condition, not a claim of statistical power.
     """
+    geometry = None
+    if support_m is not None and tile_m is not None:
+        geometry = geometry_precheck(support_m, tile_m, buffer_m)
+    geometric_block = bool(geometry is not None
+                           and not geometry["geometrically_compatible"])
     feasible = bool(
-        int(reference_count) > 0
+        not geometric_block
+        and int(reference_count) > 0
         and int(footprint_disjoint_count) > 0
         and int(buffered_supported_count) > 0
         and int(valid_fold_count) == int(folds)
         and int(common_supported_count) > 0)
-    return {
+    if geometric_block:
+        reason = "geometric_incompatibility"
+    elif int(reference_count) <= 0 or int(footprint_disjoint_count) <= 0:
+        reason = "insufficient_observations"
+    elif int(buffered_supported_count) <= 0 or int(valid_fold_count) < int(folds):
+        reason = "insufficient_observations"
+    elif int(common_supported_count) <= 0:
+        reason = "insufficient_common_support"
+    else:
+        reason = "feasible"
+    result = {
         "reference_count": int(reference_count),
         "footprint_disjoint_count": int(footprint_disjoint_count),
         "buffered_supported_count": int(buffered_supported_count),
@@ -87,5 +121,9 @@ def evaluation_feasibility(reference_count, footprint_disjoint_count,
         "reference_source": str(reference_source),
         "buffer_m": float(buffer_m),
         "evaluation_feasible": feasible,
+        "feasibility_reason": reason,
     }
+    if geometry is not None:
+        result["geometry"] = geometry
+    return result
 
