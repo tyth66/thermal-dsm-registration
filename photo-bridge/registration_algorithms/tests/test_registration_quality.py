@@ -182,7 +182,7 @@ def test_register_includes_last_full_tile_when_extent_is_exact_multiple(monkeypa
     calls = []
 
     def fake_tile(visible, thermal, joint, transform, resolution, tile,
-                  row, column, top, left):
+                  row, column, top, left, **kwargs):
         calls.append((row, column, top, left))
         return {"dx_m": 0.0, "dy_m": 0.0}
 

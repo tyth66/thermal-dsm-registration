@@ -42,6 +42,7 @@ class PlanimetricInputs:
     regularized_kernel_m: float | None = None
     regularized_ridge: float = 0.1
     domain_mode: str = "mode"
+    mask_mode: str = "joint"
     use_observation_covariance: bool = False
     orthogonal_low_frequency: bool = False
     low_frequency_degree: int = 1
@@ -62,6 +63,8 @@ def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
     for name in PLANIMETRIC_SCALE_PARAMETERS:
         if not getattr(inputs, name) > 0:
             raise ValueError("%s must be positive" % name)
+    if inputs.mask_mode not in ("joint", "separate"):
+        raise ValueError("mask_mode must be 'joint' or 'separate'")
 
 
 @dataclass(frozen=True)
@@ -199,7 +202,11 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         records, displacement = register(
             visible_high, thermal_high, joint, transform, resolution,
             tile_m, step_m, inputs.ecc_workers,
-            domain_mode=inputs.domain_mode)
+            domain_mode=inputs.domain_mode,
+            visible_mask=(visible_valid if inputs.mask_mode == "separate"
+                          else None),
+            thermal_mask=(thermal_valid if inputs.mask_mode == "separate"
+                          else None))
         accepted_raw = [record for record in records
                         if record.get("consistent", True)
                         and not record.get("ambiguous", False)]

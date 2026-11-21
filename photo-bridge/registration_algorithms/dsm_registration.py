@@ -129,7 +129,8 @@ def pixel_covariance_to_world(covariance_px, resolution):
 
 
 def _register_tile(visible_high, thermal_high, joint, transform, resolution,
-                   tile: int, row: int, column: int, top: int, left: int):
+                   tile: int, row: int, column: int, top: int, left: int,
+                   visible_mask=None, thermal_mask=None):
     """Register one tile and return it as an observation.
 
     The ECC search is computed over the candidate-dependent common mask, not
@@ -140,12 +141,16 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     its flags permit admission.
     """
     mask = joint[top:top + tile, left:left + tile]
+    mask_v = (mask if visible_mask is None
+              else visible_mask[top:top + tile, left:left + tile])
+    mask_t = (mask if thermal_mask is None
+              else thermal_mask[top:top + tile, left:left + tile])
     valid_fraction = float(mask.mean())
     if valid_fraction < 0.5:
         return None
     first = visible_high[top:top + tile, left:left + tile].astype(np.float32).copy()
     second = thermal_high[top:top + tile, left:left + tile].astype(np.float32).copy()
-    if first[mask].std() < 1e-6 or second[mask].std() < 1e-6:
+    if first[mask_v].std() < 1e-6 or second[mask_t].std() < 1e-6:
         return None
     first_n = (first - first.mean()) / (first.std() + 1e-9)
     second_n = (second - second.mean()) / (second.std() + 1e-9)
@@ -162,14 +167,17 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
 
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
-        prior=prior, radius_px=radius_px)
+        prior=prior, radius_px=radius_px,
+        visible_mask=mask_v, thermal_mask=mask_t)
     if not forward:
         return None
     reverse = masked_ecc_candidates(
         second, first, mask, resolution, top_k=1,
-        prior=(-prior[0], -prior[1]), radius_px=radius_px)
+        prior=(-prior[0], -prior[1]), radius_px=radius_px,
+        visible_mask=mask_t, thermal_mask=mask_v)
     global_forward = masked_ecc_candidates(
-        first, second, mask, resolution, top_k=1)
+        first, second, mask, resolution, top_k=1,
+        visible_mask=mask_v, thermal_mask=mask_t)
     best = forward[0]
     if global_forward:
         global_best = global_forward[0]
@@ -206,7 +214,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     else:
         margin = 1.0
         separation_m = 0.0
-    period_m = estimate_period_m(first, mask, resolution)
+    period_m = estimate_period_m(first, mask_v, resolution)
     separation_threshold = max(1.0, 0.5 * period_m) if period_m else 1.0
     ambiguous = bool((margin < AMBIGUITY_MARGIN
                       and separation_m >= separation_threshold)
@@ -395,7 +403,8 @@ def apply_displacement_domain(records, mode: str = "mad"):
 
 def register(visible_high, thermal_high, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
-             domain_mode: str = "mad"):
+             domain_mode: str = "mad",
+             visible_mask=None, thermal_mask=None):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
@@ -411,7 +420,9 @@ def register(visible_high, thermal_high, joint, transform, resolution,
     def process(task):
         row, column, top, left = task
         return _register_tile(visible_high, thermal_high, joint, transform,
-                              resolution, tile, row, column, top, left)
+                              resolution, tile, row, column, top, left,
+                              visible_mask=visible_mask,
+                              thermal_mask=thermal_mask)
     workers = max(1, int(workers))
     if workers > 1 and len(tasks) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
