@@ -13,6 +13,7 @@ from typing import Any, Mapping
 import numpy as np
 import rasterio
 
+from ..boundary_field import EDGE_CONFIDENCE_MIN
 from ..forward_mapping import grid_mapping, panel_points
 from ..io_utils import stats
 from ..residual_model import PlanimetricField
@@ -42,16 +43,24 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
     with (rasterio.open(inputs.visible_ortho) as visible_ortho,
           rasterio.open(inputs.thermal_ortho) as thermal_ortho):
         thermal_alpha = thermal_ortho.read(4)
+        thermal_transform = thermal_ortho.transform
+        thermal_bounds = (
+            thermal_transform.c,
+            thermal_transform.c + thermal_transform.a * thermal_ortho.width,
+            thermal_transform.f + thermal_transform.e * thermal_ortho.height,
+            thermal_transform.f,
+        )
         panel_rows = panel_points(
             inputs.visible_world, field, visible_ortho.transform,
-            thermal_ortho.transform, thermal_ortho.width, thermal_ortho.height,
-            thermal_alpha, inputs.field_max_distance_m)
+            thermal_transform, thermal_ortho.width, thermal_ortho.height,
+            thermal_alpha, inputs.field_max_distance_m,
+            boundary=thermal_bounds)
         grid = grid_mapping(
             inputs.visible_world, field, visible_ortho.transform,
             visible_ortho.width, visible_ortho.height,
-            thermal_ortho.transform, thermal_ortho.width, thermal_ortho.height,
+            thermal_transform, thermal_ortho.width, thermal_ortho.height,
             thermal_alpha, inputs.grid_step,
-            inputs.field_max_distance_m)
+            inputs.field_max_distance_m, boundary=thermal_bounds)
         thermal_resolution = abs(thermal_ortho.transform.a)
     panel_grouped = {}
     for row in panel_rows:
@@ -68,6 +77,10 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         panel_id for panel_id, rows in panel_grouped.items()
         if len(rows) == 5 and not any(row["naive_valid"] for row in rows)
     }
+    edge_rows = [row for row in panel_rows if row["edge_distance_m"] < 40.0]
+    edge_low_rows = [row for row in edge_rows
+                     if row["edge_confidence"] < EDGE_CONFIDENCE_MIN]
+    edge_low_panel_ids = {row["panel_id"] for row in edge_low_rows}
     valid_grid = grid["valid"]
     panel_mask = grid["panel_mask"]
     grid_size = len(grid["east"])
@@ -89,6 +102,13 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         "panel_ids_conservative_valid": len(conservative_panel_ids),
         "panel_ids_all_original_nodata": len(all_original_nodata_panel_ids),
         "panel_ids_incomplete": sum(len(rows) != 5 for rows in panel_grouped.values()),
+        "edge_band_m": 2.0 * float(getattr(field, "tile_m", 20.0)),
+        "edge_tail_points": int(sum(row["edge_tail_applied"] for row in edge_rows)),
+        "edge_low_confidence_points": len(edge_low_rows),
+        "edge_low_confidence_panels": len(edge_low_panel_ids),
+        "grid_edge_tail_points": int(np.count_nonzero(grid.get("edge_tail_applied", []))),
+        "grid_edge_low_confidence_points": int(np.count_nonzero(
+            np.asarray(grid.get("edge_confidence", np.ones(0))) < EDGE_CONFIDENCE_MIN)),
         "field_max_distance_m": (field.max_distance_m if inputs.field_max_distance_m is None
                                  else inputs.field_max_distance_m),
         "mapping_policy": MAPPING_POLICY,

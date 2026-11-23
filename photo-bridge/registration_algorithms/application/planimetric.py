@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+
 from ..dsm_registration import highpass, load_grid, register
 from ..residual_model import fit_regularized_field
 from ..vertical_estimation import component_shifts
@@ -12,8 +14,10 @@ from ..vertical_estimation import component_shifts
 MINIMUM_TILE_PIXELS = 8
 MINIMUM_ACCEPTED_TILES = 6
 MAXIMUM_TILING_ATTEMPTS = 3
-# Empirically derived from the 141/277 baseline: 40 m tile / 202 m short overlap.
-TARGET_TILE_SHORT_RATIO = 0.20
+# Tile area target: 1% of the common DSM overlap, with 50% overlap between
+# adjacent tiles.  The resulting tile is quantized to an even pixel count so
+# step = tile / 2 is exact.
+TARGET_TILE_AREA_RATIO = 0.01
 # Field support ratio: 0.30 is the CONFIRMED design ratio (not 0.15). The
 # adaptive formula is max_distance = min(30, max(10, 0.30 * short_edge)), so
 # adaptation only bites when 0.30 * short_edge < 30 m, i.e. short_edge < 100 m.
@@ -33,7 +37,7 @@ class PlanimetricInputs:
     resolution_m: float = 0.1
     tile_m: float = 40.0
     step_m: float = 20.0
-    highpass_sigma_m: float = 1.5
+    highpass_sigma_m: float = 0.0
     prior_radius_m: float = 2.0
     field_max_distance_m: float = 30.0
     warp_threads: int = 8
@@ -54,7 +58,10 @@ def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
     each error names the offending field.
     """
     for name in PLANIMETRIC_SCALE_PARAMETERS:
-        if not getattr(inputs, name) > 0:
+        value = getattr(inputs, name)
+        if name == "highpass_sigma_m" and value == 0.0:
+            continue
+        if not value > 0:
             raise ValueError("%s must be positive" % name)
 
 
@@ -89,6 +96,7 @@ class PlanimetricResult:
     tiling: TilingPlan
     field_support: FieldSupportPlan
     attempts: tuple[dict, ...]
+    highpass_sigma_m: float | None = None
 
 
 def adaptive_field_support(overlap_width_m: float,
@@ -118,28 +126,25 @@ def adaptive_field_support(overlap_width_m: float,
 def adaptive_tiling(overlap_width_m: float, overlap_height_m: float,
                     resolution_m: float, requested_tile_m: float,
                     requested_step_m: float) -> TilingPlan:
-    """Cap the requested tile/step by the DSM overlap extent and resolution.
+    """Choose a tile whose area is 1% of the DSM overlap, at 50% overlap.
 
-    The baseline 141/277 profile uses a 40 m tile on 202 m of short-overlap
-    extent (ratio ~0.20). Keep that ratio as the scale-invariant target so a
-    small station gets a proportionally smaller tile instead of inheriting the
-    absolute 40 m default. The result is quantized to whole pixels so
-    registration and reporting agree.
+    The requested tile remains an upper bound.  The pixel count is rounded to
+    an even number so the 50% step is exact after quantization.
     """
     if overlap_width_m <= 0 or overlap_height_m <= 0:
         raise ValueError("empty DSM overlap extent")
     if resolution_m <= 0 or requested_tile_m <= 0 or requested_step_m <= 0:
         raise ValueError("resolution, tile and step must be positive")
-    short_m = min(overlap_width_m, overlap_height_m)
-    baseline_ratio_tile_m = max(short_m * TARGET_TILE_SHORT_RATIO,
-                                MINIMUM_TILE_PIXELS * resolution_m)
-    tile_m = min(requested_tile_m, baseline_ratio_tile_m)
-    step_m = min(requested_step_m, tile_m / 2.0)
-    step_m = max(step_m, resolution_m)
-    tile_px = max(MINIMUM_TILE_PIXELS, int(round(tile_m / resolution_m)))
-    step_px = max(1, int(round(step_m / resolution_m)))
-    if step_px >= tile_px:
-        step_px = max(1, tile_px // 2)
+    requested_px = max(MINIMUM_TILE_PIXELS,
+                       int(round(requested_tile_m / resolution_m)))
+    target_px = np.sqrt(TARGET_TILE_AREA_RATIO * overlap_width_m
+                        * overlap_height_m) / resolution_m
+    target_px = max(MINIMUM_TILE_PIXELS,
+                    int(round(target_px / 2.0)) * 2)
+    tile_px = min(requested_px, target_px)
+    step_px = max(1, tile_px // 2)
+    tile_m = tile_px * resolution_m
+    step_m = step_px * resolution_m
     return TilingPlan(
         tile_m=tile_px * resolution_m,
         step_m=step_px * resolution_m,
@@ -150,6 +155,7 @@ def adaptive_tiling(overlap_width_m: float, overlap_height_m: float,
         requested_tile_m=float(requested_tile_m),
         requested_step_m=float(requested_step_m),
     )
+
 
 
 def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
@@ -165,9 +171,14 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
     plan = adaptive_tiling(overlap_width_m, overlap_height_m, resolution,
                            inputs.tile_m, inputs.step_m)
     maximum_attempts = MAXIMUM_TILING_ATTEMPTS
-    sigma_px = inputs.highpass_sigma_m / resolution
-    visible_high = highpass(visible_z, visible_valid, sigma_px)
-    thermal_high = highpass(thermal_z, thermal_valid, sigma_px)
+    highpass_sigma_m = float(inputs.highpass_sigma_m)
+    if highpass_sigma_m > 0.0:
+        sigma_px = highpass_sigma_m / resolution
+        visible_high = highpass(visible_z, visible_valid, sigma_px)
+        thermal_high = highpass(thermal_z, thermal_valid, sigma_px)
+    else:
+        visible_high = np.where(visible_valid, visible_z, 0.0).astype(np.float32)
+        thermal_high = np.where(thermal_valid, thermal_z, 0.0).astype(np.float32)
 
     attempts: list[dict] = []
     best = None
@@ -176,7 +187,8 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
         records, displacement = register(
             visible_high, thermal_high, joint, transform, resolution,
             tile_m, step_m, inputs.ecc_workers,
-            prior_radius_m=inputs.prior_radius_m)
+            prior_radius_m=inputs.prior_radius_m,
+            include_boundary=True)
         accepted_raw = [record for record in records
                         if record.get("consistent", True)
                         and not record.get("ambiguous", False)]
@@ -232,4 +244,4 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
             overlap_height_m=overlap_height_m,
             requested_tile_m=plan.requested_tile_m,
             requested_step_m=plan.requested_step_m),
-        attempts=tuple(attempts))
+        attempts=tuple(attempts), highpass_sigma_m=float(highpass_sigma_m))

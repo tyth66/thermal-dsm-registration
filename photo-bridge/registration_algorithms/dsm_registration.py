@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 import rasterio
-from rasterio.transform import from_origin
+from rasterio.transform import Affine, from_origin
 from rasterio.warp import Resampling, reproject
 
 from .dsm_sampling import elevation_range_for
@@ -142,7 +143,8 @@ def _competing_separation(candidates, resolution, cc_margin=0.02):
 
 def _register_tile(visible_high, thermal_high, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int,
-                   prior_radius_m: float = 2.0):
+                   prior_radius_m: float = 2.0,
+                   min_valid_fraction: float = 0.5):
     """Register one tile and return it as an observation.
 
     The ECC search is computed over the candidate-dependent common mask, not
@@ -154,7 +156,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     """
     mask = joint[top:top + tile, left:left + tile]
     valid_fraction = float(mask.mean())
-    if valid_fraction < 0.5:
+    if valid_fraction < min_valid_fraction:
         return None
     first = visible_high[top:top + tile, left:left + tile].astype(np.float32).copy()
     second = thermal_high[top:top + tile, left:left + tile].astype(np.float32).copy()
@@ -356,9 +358,85 @@ def apply_displacement_domain(records):
     return kept, {**domain, "rejected": len(records) - len(kept)}
 
 
+
+def _contour_boundary_tasks(joint, tile, step, transform, resolution):
+    """Sample the valid-data contour with full windows shifted inward.
+
+    The sample point lies on the irregular valid-data boundary.  The window
+    centre may move inward by up to half a tile so the window stays inside the
+    data region; both points are recorded.
+    """
+    binary = joint.astype(np.uint8)
+    contours, _ = cv2.findContours(binary, cv2.RETR_LIST,
+                                   cv2.CHAIN_APPROX_NONE)
+    tasks = []
+    seen = set()
+    directions = [(math.cos(2.0 * math.pi * i / 16.0),
+                   math.sin(2.0 * math.pi * i / 16.0)) for i in range(16)]
+    distances = (tile // 4, tile // 2)
+    for contour in contours:
+        points = contour.reshape(-1, 2).astype(np.float64)
+        if len(points) < 2:
+            continue
+        deltas = np.diff(points, axis=0)
+        lengths = np.hypot(deltas[:, 0], deltas[:, 1])
+        cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+        if cumulative[-1] <= 0:
+            continue
+        sample_positions = np.arange(0.0, cumulative[-1], float(step))
+        for position in sample_positions:
+            index = int(np.searchsorted(cumulative, position, side="right") - 1)
+            index = min(max(index, 0), len(points) - 1)
+            x, y = float(points[index, 0]), float(points[index, 1])
+            best = None
+            for distance in distances:
+                for dx, dy in directions:
+                    cx = x + dx * distance
+                    cy = y + dy * distance
+                    top = int(round(cy - tile / 2.0))
+                    left = int(round(cx - tile / 2.0))
+                    if top < 0 or left < 0:
+                        continue
+                    if top + tile > joint.shape[0] or left + tile > joint.shape[1]:
+                        continue
+                    fraction = float(joint[top:top + tile, left:left + tile].mean())
+                    if fraction < 0.50:
+                        continue
+                    if best is None or fraction > best[0]:
+                        best = (fraction, top, left, cx, cy,
+                                math.hypot(cx - x, cy - y))
+            if best is None:
+                continue
+            key = (best[1], best[2], round(best[3], 1), round(best[4], 1))
+            if key in seen:
+                continue
+            seen.add(key)
+            tasks.append({
+                "top": best[1], "left": best[2],
+                "sample_x": x, "sample_y": y,
+                "window_x": best[3], "window_y": best[4],
+                "shift_m": best[5] * resolution,
+                "valid_fraction": best[0],
+            })
+    return tasks
+
+def _edge_tasks(height, width, tile, step, pad):
+    """Tile centres on each raster edge, expressed in padded coordinates."""
+    tasks = set()
+    for row in range(0, height, step):
+        top = pad + row - tile // 2
+        tasks.add((top, 0))
+        tasks.add((top, pad + width - 1 - tile // 2))
+    for column in range(0, width, step):
+        left = pad + column - tile // 2
+        tasks.add((0, left))
+        tasks.add((pad + height - 1 - tile // 2, left))
+    return sorted(tasks)
+
+
 def register(visible_high, thermal_high, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
-             prior_radius_m: float = 2.0):
+             prior_radius_m: float = 2.0, include_boundary: bool = False):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
@@ -382,5 +460,52 @@ def register(visible_high, thermal_high, joint, transform, resolution,
             results = list(pool.map(process, tasks))
     else:
         results = [process(task) for task in tasks]
+    if include_boundary:
+        boundary_tasks = _contour_boundary_tasks(
+            joint, tile, step, transform, resolution)
+        if boundary_tasks:
+            def process_boundary(task):
+                record = _register_tile(
+                    visible_high, thermal_high, joint, transform, resolution,
+                    tile, 0, 0, task["top"], task["left"],
+                    prior_radius_m=prior_radius_m, min_valid_fraction=0.50)
+                if record is None:
+                    return None
+                sample = transform * (task["sample_x"] + 0.5,
+                                      task["sample_y"] + 0.5)
+                record["sample_east"] = float(sample[0])
+                record["sample_north"] = float(sample[1])
+                record["boundary_shift_m"] = float(task["shift_m"])
+                return record
+            if workers > 1 and len(boundary_tasks) > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    boundary_results = list(pool.map(
+                        process_boundary, boundary_tasks))
+            else:
+                boundary_results = [process_boundary(task)
+                                    for task in boundary_tasks]
+            results.extend(boundary_results)
+        else:
+            pad = tile // 2
+            padded_visible = np.pad(visible_high, ((pad, pad), (pad, pad)),
+                                    mode="constant", constant_values=0.0)
+            padded_thermal = np.pad(thermal_high, ((pad, pad), (pad, pad)),
+                                    mode="constant", constant_values=0.0)
+            padded_joint = np.pad(joint, ((pad, pad), (pad, pad)),
+                                  mode="constant", constant_values=False)
+            padded_transform = transform * Affine.translation(-pad, -pad)
+            edge_tasks = _edge_tasks(height, width, tile, step, pad)
+            def process_edge(task):
+                top, left = task
+                return _register_tile(
+                    padded_visible, padded_thermal, padded_joint,
+                    padded_transform, resolution, tile, 0, 0, top, left,
+                    prior_radius_m=prior_radius_m, min_valid_fraction=0.25)
+            if workers > 1 and len(edge_tasks) > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    edge_results = list(pool.map(process_edge, edge_tasks))
+            else:
+                edge_results = [process_edge(task) for task in edge_tasks]
+            results.extend(edge_results)
     raw = [record for record in results if record is not None]
     return apply_displacement_domain(raw)

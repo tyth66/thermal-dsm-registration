@@ -10,6 +10,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from .boundary_field import evaluate_boundary_field
 from .residual_model import PlanimetricField, field_support_mask
 
 
@@ -46,7 +47,8 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                  visible_transform, thermal_transform,
                  thermal_width: int, thermal_height: int,
                  thermal_alpha: np.ndarray,
-                 field_max_distance: float | None = None) -> list[dict]:
+                 field_max_distance: float | None = None,
+                 boundary=None) -> list[dict]:
     visible_inverse = ~visible_transform
     thermal_inverse = ~thermal_transform
     entries = []
@@ -65,9 +67,18 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     east = np.asarray([entry["east"] for entry in entries], float)
     north = np.asarray([entry["north"] for entry in entries], float)
     delta_e, delta_n, weight, nearest = field.evaluate(east, north)
+    edge_distance = np.full(len(east), np.inf, float)
+    edge_tail_applied = np.zeros(len(east), bool)
+    edge_confidence = np.ones(len(east), float)
+    if boundary is not None:
+        delta_e, delta_n, edge_distance, edge_tail_applied, edge_confidence = (
+            evaluate_boundary_field(field, east, north, boundary))
     _require_finite_shift(delta_e, delta_n)
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                     field_max_distance)
+    support_confidence = (field.support_confidence(east, north)
+                          if hasattr(field, "support_confidence")
+                          else np.ones(len(east), float))
     naive_u, naive_v = _pixels(thermal_inverse, east, north)
     visible_u, visible_v = _pixels(visible_inverse, east, north)
     east_t = east + delta_e
@@ -117,6 +128,10 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                 "target_valid": int(corrected_valid[i]),
                 "residual_applied": 1,
                 "field_weight": float(weight[i]), "nearest_tile_m": float(nearest[i]),
+                "support_confidence": float(support_confidence[i]),
+                "edge_distance_m": float(edge_distance[i]),
+                "edge_tail_applied": int(bool(edge_tail_applied[i])),
+                "edge_confidence": float(edge_confidence[i]),
             })
         component_mapped = bool(np.any(naive_valid[start:end]))
         center_row = next((row for row in panel_rows if row["point"] == "center"),
@@ -147,7 +162,8 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
                  visible_transform, visible_width: int, visible_height: int,
                  thermal_transform, thermal_width: int, thermal_height: int,
                  thermal_alpha: np.ndarray, step: int,
-                 field_max_distance: float | None = None) -> dict:
+                 field_max_distance: float | None = None,
+                 boundary=None) -> dict:
     grid_height = visible_height // step
     grid_width = visible_width // step
     if grid_height == 0 or grid_width == 0:
@@ -168,6 +184,12 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
         cv2.fillPoly(mask, [polygon], panel_index[panel_id])
     panel_index_grid = mask.ravel()
     delta_e, delta_n, weight, nearest = field.evaluate(east, north)
+    edge_distance = np.full(len(east), np.inf, float)
+    edge_tail_applied = np.zeros(len(east), bool)
+    edge_confidence = np.ones(len(east), float)
+    if boundary is not None:
+        delta_e, delta_n, edge_distance, edge_tail_applied, edge_confidence = (
+            evaluate_boundary_field(field, east, north, boundary))
     east_t_global = east + delta_e
     north_t_global = north + delta_n
     thermal_inverse = ~thermal_transform
@@ -187,6 +209,9 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
     naive_valid = naive_inside & (naive_alpha > 0)
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                     field_max_distance)
+    support_confidence = (field.support_confidence(east, north)
+                          if hasattr(field, "support_confidence")
+                          else np.ones(len(east), float))
     use_corrected = np.isfinite(delta_e) & np.isfinite(delta_n)
     if not np.all(use_corrected):
         raise ValueError("non-finite planimetric prediction")
@@ -228,14 +253,20 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
         "panel_id": np.asarray([""] + panel_ids, dtype=object)[panel_index_grid],
         "panel_mask": panel_mask,
         "field_weight": weight, "nearest_tile_m": nearest,
+        "support_confidence": support_confidence,
         "field_valid": field_valid,
+        "edge_distance_m": edge_distance,
+        "edge_tail_applied": edge_tail_applied,
+        "edge_confidence": edge_confidence,
     }
 
 
 def _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                       max_distance: float | None):
-    threshold = field.max_distance_m if max_distance is None else max_distance
-    return field_support_mask(delta_e, delta_n, weight, nearest, threshold)
+    fallback = field.max_distance_m if max_distance is None else max_distance
+    guard = 2.0 * float(getattr(field, "tile_m", fallback / 2.0))
+    return field_support_mask(delta_e, delta_n, weight, nearest,
+                              max(guard, 1e-6))
 
 
 def _require_finite_shift(delta_e, delta_n):

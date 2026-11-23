@@ -38,23 +38,23 @@ def test_adaptive_field_support_has_floor():
     assert plan.max_distance_m == pytest.approx(10.0)
 
 
-def test_adaptive_tiling_caps_small_station_to_overlap():
+def test_adaptive_tiling_uses_one_percent_area():
     plan = adaptive_tiling(98.7, 52.2, 0.1, 40.0, 20.0)
     assert plan.tile_m < 40.0
-    assert plan.tile_m <= 52.2 / 2.0 + 1e-9
-    assert plan.tile_m / 52.2 == pytest.approx(0.199, abs=0.002)
-    assert plan.tile_m == pytest.approx(10.4)
-    assert plan.step_m == pytest.approx(5.2)
+    assert plan.tile_m * plan.tile_m / (98.7 * 52.2) == pytest.approx(
+        0.01, abs=0.0002)
+    assert plan.step_m == pytest.approx(plan.tile_m / 2.0)
     assert plan.tile_px >= 8
     assert plan.step_px < plan.tile_px
 
 
-def test_adaptive_tiling_keeps_requested_for_large_station():
+def test_adaptive_tiling_uses_one_percent_for_large_station():
     plan = adaptive_tiling(202.0, 299.1, 0.1, 40.0, 20.0)
-    assert plan.tile_m == pytest.approx(40.0)
-    assert plan.step_m == pytest.approx(20.0)
-    assert plan.tile_px == 400
-    assert plan.step_px == 200
+    assert plan.tile_m * plan.tile_m / (202.0 * 299.1) == pytest.approx(
+        0.01, abs=0.0002)
+    assert plan.step_m == pytest.approx(plan.tile_m / 2.0)
+    assert plan.tile_px % 2 == 0
+    assert plan.step_px == plan.tile_px // 2
 
 
 def test_adaptive_tiling_has_pixel_floor():
@@ -71,7 +71,7 @@ def test_estimate_planimetric_rejects_non_positive_scale_parameters(tmp_path):
     base = dict(visible_dsm=tmp_path / "visible.tif",
                 thermal_dsm=tmp_path / "thermal.tif",
                 visible_world={"panels": []})
-    for name in ("resolution_m", "tile_m", "step_m", "highpass_sigma_m",
+    for name in ("resolution_m", "tile_m", "step_m",
                  "field_max_distance_m"):
         with pytest.raises(ValueError, match=name):
             estimate_planimetric(PlanimetricInputs(**base, **{name: 0.0}))

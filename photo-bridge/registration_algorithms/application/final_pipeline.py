@@ -62,6 +62,8 @@ def planimetric_provenance(result) -> dict:
         "attempts": [dict(attempt) for attempt in result.attempts],
         "kernel_length_m": float(result.field.kernel_length_m),
         "ridge": float(result.field.ridge),
+        "highpass_sigma_m": (None if getattr(result, "highpass_sigma_m", None) is None
+                             else float(result.highpass_sigma_m)),
     }
 
 

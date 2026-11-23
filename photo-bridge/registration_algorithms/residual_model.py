@@ -49,6 +49,40 @@ class PlanimetricField:
 REGULARIZED_FIELD_TYPE = "similarity_regularized_rbf/v1"
 
 
+
+def _coverage_weight_scale(centers: np.ndarray, tile_m: float) -> np.ndarray:
+    """Mean tile-footprint coverage count for each observation centre."""
+    centers = np.asarray(centers, float)
+    if len(centers) < 2:
+        return np.ones(len(centers), float)
+    cell = max(float(tile_m) / 8.0, 1e-3)
+    half = float(tile_m) / 2.0
+    low = centers.min(axis=0) - half
+    high = centers.max(axis=0) + half
+    shape = np.maximum(1, np.ceil((high - low) / cell).astype(int) + 1)
+    counts = np.zeros(tuple(shape), np.float32)
+    for east, north in centers:
+        left = int(np.floor((east - half - low[0]) / cell))
+        right = int(np.ceil((east + half - low[0]) / cell))
+        bottom = int(np.floor((north - half - low[1]) / cell))
+        top = int(np.ceil((north + half - low[1]) / cell))
+        left, right = max(0, left), min(shape[0], right)
+        bottom, top = max(0, bottom), min(shape[1], top)
+        if right > left and top > bottom:
+            counts[left:right, bottom:top] += 1.0
+    scales = np.ones(len(centers), float)
+    for index, (east, north) in enumerate(centers):
+        left = int(np.floor((east - half - low[0]) / cell))
+        right = int(np.ceil((east + half - low[0]) / cell))
+        bottom = int(np.floor((north - half - low[1]) / cell))
+        top = int(np.ceil((north + half - low[1]) / cell))
+        left, right = max(0, left), min(shape[0], right)
+        bottom, top = max(0, bottom), min(shape[1], top)
+        if right > left and top > bottom:
+            scales[index] = max(1.0, float(np.mean(
+                counts[left:right, bottom:top])))
+    return scales
+
 def _weighted_similarity(east: np.ndarray, north: np.ndarray,
                          target_east: np.ndarray, target_north: np.ndarray,
                          weights: np.ndarray):
@@ -96,7 +130,8 @@ def _weighted_similarity(east: np.ndarray, north: np.ndarray,
 def fit_regularized_field(rows: Iterable[dict], tile_m: float,
                           max_distance_m: float = 30.0,
                           kernel_length_m: float | None = None,
-                          ridge: float = 0.1):
+                          ridge: float = 0.1,
+                          normalize_coverage: bool = True):
     """Fit global similarity + regularized RBF residual.
 
     The residual model decays to zero outside the tile support, so weak-support
@@ -114,9 +149,13 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
     # observation, not the most: floor it at the minimum weight instead of
     # replacing it with the maximum (1.0).  clip also bounds finite values.
     cc = np.clip(np.where(np.isfinite(cc), cc, 1e-3), 1e-3, 1.0)
+    cc_raw = cc.copy()
     quality = np.asarray([float(row.get("quality_weight", 1.0)) for row in rows], float)
     quality = np.clip(np.where(np.isfinite(quality), quality, 1e-3), 1e-3, 1.0)
     cc = cc * quality
+    if normalize_coverage:
+        cc = cc / _coverage_weight_scale(
+            np.column_stack([east, north]), tile_m)
     tree = cKDTree(np.column_stack([east, north]))
     if len(rows) > 1:
         spacing = tree.query(np.column_stack([east, north]), k=2)[0][:, 1]
@@ -147,14 +186,14 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
     rhs = weighted_kernel.T @ fit_residual
     coefficients = np.linalg.solve(normal, rhs)
     tiles = [{
-        "east": float(east[i]), "north": float(north[i]), "cc": float(cc[i]),
+        "east": float(east[i]), "north": float(north[i]), "cc": float(cc_raw[i]),
         "residual_e": float(residual[i, 0]), "residual_n": float(residual[i, 1]),
     } for i in range(len(rows))]
     return RegularizedPlanimetricField(
         tiles=tiles, centers=centers, weights=fit_weights,
         coefficients=coefficients, matrix=matrix, translation=translation,
         kernel_length_m=kernel_length_m, ridge=float(ridge),
-        max_distance_m=float(max_distance_m))
+        max_distance_m=float(max_distance_m), tile_m=float(tile_m))
 
 
 class RegularizedPlanimetricField(PlanimetricField):
@@ -163,7 +202,8 @@ class RegularizedPlanimetricField(PlanimetricField):
     EVALUATION_CHUNK = 250_000
 
     def __init__(self, tiles, centers, weights, coefficients, matrix,
-                 translation, kernel_length_m, ridge, max_distance_m):
+                 translation, kernel_length_m, ridge, max_distance_m,
+                 tile_m: float | None = None):
         self.tiles = list(tiles)
         self.east = np.asarray([tile["east"] for tile in self.tiles], float)
         self.north = np.asarray([tile["north"] for tile in self.tiles], float)
@@ -178,6 +218,7 @@ class RegularizedPlanimetricField(PlanimetricField):
         self.kernel_length_m = float(kernel_length_m)
         self.ridge = float(ridge)
         self.max_distance_m = float(max_distance_m)
+        self.tile_m = float(tile_m) if tile_m else self.kernel_length_m / 2.5
         self.tree = cKDTree(np.column_stack([self.east, self.north])) if len(self.east) else None
 
     @classmethod
@@ -185,7 +226,7 @@ class RegularizedPlanimetricField(PlanimetricField):
         return cls(tiles=[], centers=np.empty((0, 2)), weights=np.empty(0),
                    coefficients=np.empty((0, 2)), matrix=np.eye(2),
                    translation=np.zeros(2), kernel_length_m=1.0,
-                   ridge=0.1, max_distance_m=max_distance_m)
+                   ridge=0.1, max_distance_m=max_distance_m, tile_m=1.0)
 
     @classmethod
     def from_model(cls, model: dict):
@@ -202,7 +243,8 @@ class RegularizedPlanimetricField(PlanimetricField):
             translation=np.asarray(similarity["translation"], float),
             kernel_length_m=float(residual["kernel_length_m"]),
             ridge=float(residual["ridge"]),
-            max_distance_m=float(model.get("max_distance_m", 30.0)))
+            max_distance_m=float(model.get("max_distance_m", 30.0)),
+            tile_m=float(model.get("tile_m", 0.0)) or None)
 
     def to_model(self) -> dict:
         rotation = float(np.degrees(np.arctan2(self.matrix[1, 0], self.matrix[0, 0])))
@@ -225,6 +267,7 @@ class RegularizedPlanimetricField(PlanimetricField):
                 "tiles": self.tiles,
             },
             "max_distance_m": self.max_distance_m,
+            "tile_m": self.tile_m,
         }
 
     def _kernel(self, east, north):
@@ -253,6 +296,26 @@ class RegularizedPlanimetricField(PlanimetricField):
             "sigma_min": singular[:, -1],
             "sigma_max": singular[:, 0],
         }
+
+
+    def support_confidence(self, east, north):
+        """Continuous tile-scale Gaussian support in [0, 1]."""
+        east = np.asarray(east, float)
+        north = np.asarray(north, float)
+        if len(self.centers) == 0 or len(east) == 0:
+            return np.zeros(len(east), float)
+        sigma = max(self.tile_m / 2.0, 1e-6)
+        total_weight = max(float(self.weights.sum()), 1e-12)
+        result = np.empty(len(east), float)
+        chunk = 250_000
+        for start in range(0, len(east), chunk):
+            stop = start + chunk
+            points = np.column_stack([east[start:stop], north[start:stop]])
+            squared = ((points[:, None, 0] - self.centers[None, :, 0]) ** 2
+                       + (points[:, None, 1] - self.centers[None, :, 1]) ** 2)
+            kernel = np.exp(-0.5 * squared / (sigma ** 2))
+            result[start:stop] = (kernel @ self.weights) / total_weight
+        return result
 
     def support_metrics(self, east, north):
         """Local effective count and weighted covariance of observation centres."""

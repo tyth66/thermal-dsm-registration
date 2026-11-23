@@ -2,7 +2,9 @@
 
 版本：单一路径生产模型  
 代码基线：03c0bb9  
-测试：85 passed
+测试：89 passed
+
+当前正式实现与参数见 [CURRENT_ALGORITHM.md](CURRENT_ALGORITHM.md)。
 
 ## 1. 目标与范围
 
@@ -69,61 +71,60 @@ G_\sigma(x)=\frac{1}{2\pi\sigma^2}
 \exp\left(-\frac{\|x\|^2}{2\sigma^2}\right)
 \]
 
-默认：
+当前生产默认关闭高通：
 
 \[
-\sigma=1.5\ \text{m}
+\sigma=0
 \]
 
-高通后无效像元置 0。
+自动高通估计已从正式路径移除；当前 run 296 不使用高通。
 
 ## 4. 分块与场支撑
 
 ### 4.1 自适应 Tile
 
-请求值：
+当前按图像面积确定 tile：
 
 \[
-W_t^{req}=40\ \text{m},\qquad W_s^{req}=20\ \text{m}
+A_t=0.01\,WH
 \]
-
-短边为：
 
 \[
-S=\min(W,H)
+W_t\approx\sqrt{A_t}
 \]
-
-实际 tile：
 
 \[
-W_t=\min\left(W_t^{req},
-\max(0.2S,8r)\right)
+W_s=W_t/2
 \]
 
-步长：
+像素数取偶数，保证精确 50% 重叠。
+
+run 296：
 
 \[
-W_s=\min(W_s^{req},W_t/2)
+W_t=29.6\ \text{m},\qquad W_s=14.8\ \text{m}
 \]
-
-两者量化到整像素。
 
 若第一次尝试 accepted 少于 6，则 tile/step 减半重试，最多 3 次；取 accepted 最多的尝试。
 
 ### 4.2 场支撑
 
+当前使用连续高斯支撑置信度：
+
 \[
-D_s=\min\left(30,\max(10,0.30S)\right)
+S(p)=\frac{\sum_i w_i e^{-\|p-p_i\|^2/(2(T/2)^2)}}{\sum_i w_i}
 \]
 
-场支撑条件：
+并保留硬保护：
 
 \[
 \text{field\_supported}(p)=
 [\text{finite }d(p)]
 \land[\text{weight}(p)>0]
-\land[d_{\min}(p)\le D_s]
+\land[d_{\min}(p)\le 2T]
 \]
+
+不设支撑置信度门限 \(C_{\min}\)。
 
 其中 \(d_{\min}\) 是到最近观测中心的距离。
 
@@ -698,20 +699,25 @@ payload 只按：
 | 参数 | 值 |
 |---|---:|
 | 公共网格 \(r\) | 0.1 m |
-| 请求 tile/step | 40 / 20 m |
-| 自适应 tile | 开启 |
-| 高通 \(\sigma\) | 1.5 m |
+| 请求 tile 上限 | 40 m |
+| tile 面积目标 | 图像 1% |
+| run 296 tile/step | 29.6 / 14.8 m |
+| 高通 \(\sigma\) | 0（关闭） |
 | prior 半径 | 2 m |
 | FB 容差 | 0.20 m |
 | 歧义 margin | 0.02 |
 | \(\sigma_0\) | 0.05 m |
 | 位移域 | mode |
-| 场支撑 | 自适应，上限 30 m |
+| 场支撑 | 高斯置信 + \(2T\) 硬保护 |
+| 支撑 \(C_{\min}\) | 无 |
+| 覆盖归一化 | tile/8 格网 |
 | 相似变换 | q-only 加权 IRLS |
 | RBF | coefficient ridge |
 | 岭参数 \(\lambda\) | 0.1 |
-| RBF 核长 \(L\) | 自动 |
+| RBF 核长 \(L\) | 自动，run 296 = 74 m |
+| 边界衰减 | Gaussian \(\sigma=T\)，范围 \(2T\) |
 | 面板映射 | rigid |
+| edge confidence 门限 | 关闭 |
 | 交付口径 | conservative_valid |
 
 ## 12. 控制流与失败处理
@@ -747,3 +753,5 @@ payload 只按：
 - conservative_valid 只表示源、场、目标三态同时成立，不表示真实误差上界。
 
 在缺少独立锚点时，模型输出应被视为相对配准候选，而不是绝对几何真值。
+
+边界单侧支撑、RBF 衰减和边界外推问题见 [BOUNDARY_EXTRAPOLATION.md](BOUNDARY_EXTRAPOLATION.md)。
