@@ -453,19 +453,47 @@ class RegularizedPlanimetricField(PlanimetricField):
             nearest, _ = self.tree.query(np.column_stack([east, north]), k=1)
         return dx, dy, weight_sum, nearest
 
-    def _evaluate_chunk(self, east, north):
+    def evaluate_with_support(self, east, north):
+        """Evaluate displacement and support confidence in one kernel pass."""
+        east = np.asarray(east, float)
+        north = np.asarray(north, float)
+        size = len(east)
+        dx = np.empty(size, float)
+        dy = np.empty(size, float)
+        weight_sum = np.empty(size, float)
+        support = np.empty(size, float)
+        for start in range(0, size, self.EVALUATION_CHUNK):
+            stop = start + self.EVALUATION_CHUNK
+            dx[start:stop], dy[start:stop], weight_sum[start:stop], support[start:stop] = (
+                self._evaluate_chunk(east[start:stop], north[start:stop],
+                                     include_support=True))
+        if self.tree is None:
+            nearest = np.full(size, np.inf)
+        else:
+            nearest, _ = self.tree.query(np.column_stack([east, north]), k=1)
+        return dx, dy, weight_sum, nearest, support
+
+    def _evaluate_chunk(self, east, north, include_support=False):
         points = np.column_stack([np.asarray(east, float), np.asarray(north, float)])
         centered = points - self.center
         displacement = centered @ self.displacement_gradient.T + self.translation
         residual = np.zeros_like(points)
         density = np.zeros(len(points), float)
+        support = np.zeros(len(points), float)
         if len(self.centers):
             squared = ((points[:, None, 0] - self.centers[None, :, 0]) ** 2
                        + (points[:, None, 1] - self.centers[None, :, 1]) ** 2)
             kernel = np.exp(-0.5 * squared / (self.kernel_length_m ** 2))
             residual = kernel @ self.coefficients
             density = kernel.sum(axis=1) / max(len(self.centers), 1)
+            if include_support:
+                sigma = max(self.tile_m / 2.0, 1e-6)
+                support_kernel = np.exp(-0.5 * squared / (sigma ** 2))
+                total_weight = max(float(self.weights.sum()), 1e-12)
+                support = support_kernel @ self.weights / total_weight
         delta = displacement + residual
+        if include_support:
+            return delta[:, 0], delta[:, 1], density, support
         return delta[:, 0], delta[:, 1], density
 
 

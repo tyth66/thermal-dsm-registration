@@ -14,6 +14,16 @@ from .boundary_field import evaluate_boundary_field
 from .residual_model import PlanimetricField, field_support_mask
 
 
+def _evaluate_with_support(field, east, north):
+    if hasattr(field, "evaluate_with_support"):
+        return field.evaluate_with_support(east, north)
+    delta_e, delta_n, weight, nearest = field.evaluate(east, north)
+    support = (field.support_confidence(east, north)
+               if hasattr(field, "support_confidence")
+               else np.ones(len(east), float))
+    return delta_e, delta_n, weight, nearest, support
+
+
 def _pixels(inverse, east, north):
     east = np.asarray(east, float)
     north = np.asarray(north, float)
@@ -66,7 +76,8 @@ def panel_points(visible_world: dict, field: PlanimetricField,
         return []
     east = np.asarray([entry["east"] for entry in entries], float)
     north = np.asarray([entry["north"] for entry in entries], float)
-    delta_e, delta_n, weight, nearest = field.evaluate(east, north)
+    delta_e, delta_n, weight, nearest, support_confidence = (
+        _evaluate_with_support(field, east, north))
     edge_distance = np.full(len(east), np.inf, float)
     edge_tail_applied = np.zeros(len(east), bool)
     if boundary is not None:
@@ -76,9 +87,6 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     _require_finite_shift(delta_e, delta_n)
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                     field_max_distance)
-    support_confidence = (field.support_confidence(east, north)
-                          if hasattr(field, "support_confidence")
-                          else np.ones(len(east), float))
     naive_u, naive_v = _pixels(thermal_inverse, east, north)
     visible_u, visible_v = _pixels(visible_inverse, east, north)
     east_t = east + delta_e
@@ -182,7 +190,8 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
         polygon = np.column_stack([col / step, row / step]).astype(np.int32)
         cv2.fillPoly(mask, [polygon], panel_index[panel_id])
     panel_index_grid = mask.ravel()
-    delta_e, delta_n, weight, nearest = field.evaluate(east, north)
+    delta_e, delta_n, weight, nearest, support_confidence = (
+        _evaluate_with_support(field, east, north))
     edge_distance = np.full(len(east), np.inf, float)
     edge_tail_applied = np.zeros(len(east), bool)
     if boundary is not None:
@@ -208,9 +217,6 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
     naive_valid = naive_inside & (naive_alpha > 0)
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                     field_max_distance)
-    support_confidence = (field.support_confidence(east, north)
-                          if hasattr(field, "support_confidence")
-                          else np.ones(len(east), float))
     use_corrected = np.isfinite(delta_e) & np.isfinite(delta_n)
     if not np.all(use_corrected):
         raise ValueError("non-finite planimetric prediction")

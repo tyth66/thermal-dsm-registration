@@ -16,7 +16,7 @@ from .dsm_sampling import elevation_range_for
 from .masked_ecc import (
     CANDIDATE_MODE_MASS_MIN, SIGMA0_M, SOFTMAX_BETA,
     candidate_mode_quality, estimate_period_m, masked_ecc_candidates,
-    masked_ecc_surface,
+    masked_ecc_peaks, masked_ecc_surface,
 )
 # Reuse the single projected-metre CRS predicate instead of duplicating it: a
 # DSM grid is only meaningful when both rasters share one metric, north-up frame.
@@ -157,14 +157,15 @@ def _register_tile(visible, thermal, joint, transform, resolution,
     radius_px = max(8.0, float(prior_radius_m) / resolution)
 
     surface = masked_ecc_surface(first, second, mask)
+    peaks = masked_ecc_peaks(surface[1])
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
         prior=prior, radius_px=radius_px, covariance_fn=covariance_fn,
-        surface=surface)
+        surface=surface, peaks=peaks)
     if not forward:
         return None
     global_forward = masked_ecc_candidates(
-        first, second, mask, resolution, top_k=1, surface=surface)
+        first, second, mask, resolution, top_k=1, surface=surface, peaks=peaks)
     best = forward[0]
     if global_forward:
         global_best = global_forward[0]

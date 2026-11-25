@@ -69,6 +69,23 @@ def test_centered_displacement_parameterization_roundtrips():
                                field.displacement_gradient, atol=1e-12)
 
 
+def test_evaluate_with_support_matches_separate_passes():
+    rows, _, _ = _rows()
+    field = fit_regularized_field(
+        rows, tile_m=10.0, max_distance_m=100.0,
+        kernel_length_m=20.0, ridge=1e-6)
+    east = np.asarray([596000.0, 596040.0, 596080.0])
+    north = np.asarray([3234000.0, 3234030.0, 3234060.0])
+    dx, dy, weight, nearest = field.evaluate(east, north)
+    support = field.support_confidence(east, north)
+    fused = field.evaluate_with_support(east, north)
+    np.testing.assert_allclose(fused[0], dx)
+    np.testing.assert_allclose(fused[1], dy)
+    np.testing.assert_allclose(fused[2], weight)
+    np.testing.assert_allclose(fused[3], nearest)
+    np.testing.assert_allclose(fused[4], support)
+
+
 def test_regularized_residual_does_not_extrapolate_to_unbounded_shift():
     rows, _, _ = _rows()
     field = fit_regularized_field(

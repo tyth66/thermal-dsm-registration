@@ -34,6 +34,11 @@ def _corr_raw(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.fft.irfft2(np.conj(fa) * fb, s=shape)
 
 
+def _cross_raw(fa, fb, shape) -> np.ndarray:
+    """Cross-correlation from cached spectra, zero lag at (0, 0)."""
+    return np.fft.irfft2(np.conj(fa) * fb, s=shape)
+
+
 def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Linear cross-correlation with zero lag at the array centre."""
     return np.fft.fftshift(_corr_raw(a, b))
@@ -41,9 +46,14 @@ def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def _lag_window(raw: np.ndarray, limit: int) -> np.ndarray:
     """Extract lags -limit..limit without fftshifting the full array."""
-    rows = np.arange(-limit, limit + 1) % raw.shape[0]
-    columns = np.arange(-limit, limit + 1) % raw.shape[1]
-    return raw[np.ix_(rows, columns)]
+    if limit == 0:
+        return raw[:1, :1].copy()
+    out = np.empty((2 * limit + 1, 2 * limit + 1), dtype=raw.dtype)
+    out[:limit, :limit] = raw[-limit:, -limit:]
+    out[:limit, limit:] = raw[-limit:, :limit + 1]
+    out[limit:, :limit] = raw[:limit + 1, -limit:]
+    out[limit:, limit:] = raw[:limit + 1, :limit + 1]
+    return out
 
 
 def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
@@ -67,15 +77,21 @@ def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
         max_shift_px = min(height, width) // 2
     limit = max(0, min(int(max_shift_px), height - 1, width - 1))
     shifts = np.arange(-limit, limit + 1)
-    raw = _corr_raw(mask, mask)
+    shape = (2 * height, 2 * width)
+    f_mask = np.fft.rfft2(mask, s=shape)
+    f_v = np.fft.rfft2(mask * v, s=shape)
+    f_t = np.fft.rfft2(mask * t, s=shape)
+    f_vv = np.fft.rfft2(mask * v * v, s=shape)
+    f_tt = np.fft.rfft2(mask * t * t, s=shape)
+    raw = _cross_raw(f_mask, f_mask, shape)
     zero_shift_area = float(raw[0, 0])
     m = _lag_window(raw, limit)
     del raw
-    v_sum = _lag_window(_corr_raw(mask * v, mask), limit)
-    t_sum = _lag_window(_corr_raw(mask, mask * t), limit)
-    vv_sum = _lag_window(_corr_raw(mask * v * v, mask), limit)
-    tt_sum = _lag_window(_corr_raw(mask, mask * t * t), limit)
-    vt_sum = _lag_window(_corr_raw(mask * v, mask * t), limit)
+    v_sum = _lag_window(_cross_raw(f_v, f_mask, shape), limit)
+    t_sum = _lag_window(_cross_raw(f_mask, f_t, shape), limit)
+    vv_sum = _lag_window(_cross_raw(f_vv, f_mask, shape), limit)
+    tt_sum = _lag_window(_cross_raw(f_mask, f_tt, shape), limit)
+    vt_sum = _lag_window(_cross_raw(f_v, f_t, shape), limit)
     valid = m > 0.0
     if zero_shift_area > 0:
         valid &= m >= 0.5 * zero_shift_area
@@ -150,6 +166,23 @@ def _subpixel(ecc: np.ndarray, iy: int, ix: int) -> tuple[float, float]:
     return float(np.clip(dx, -0.5, 0.5)), float(np.clip(dy, -0.5, 0.5))
 
 
+def masked_ecc_peaks(ecc: np.ndarray, nms_px: int = DEFAULT_NMS_PX):
+    """Return local peak indices/scores/order for a cached ECC surface."""
+    valid = np.isfinite(ecc)
+    if not np.any(valid):
+        return np.empty((0, 2), int), np.empty(0, float), np.empty(0, int)
+    surface = np.where(valid, ecc, -np.inf)
+    local_max = maximum_filter(surface, size=2 * nms_px + 1,
+                               mode="constant", cval=-np.inf)
+    peak_indices = np.argwhere(valid & (surface >= local_max - 1e-12))
+    if len(peak_indices) == 0:
+        iy, ix = np.unravel_index(np.nanargmax(ecc), ecc.shape)
+        peak_indices = np.array([[iy, ix]])
+    scores = ecc[peak_indices[:, 0], peak_indices[:, 1]]
+    order = np.argsort(scores)[::-1]
+    return peak_indices, scores, order
+
+
 def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
                           joint: np.ndarray, resolution_m: float,
                           top_k: int = DEFAULT_TOP_K,
@@ -158,7 +191,7 @@ def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
                           prior: tuple[float, float] | None = None,
                           radius_px: float | None = None,
                           covariance_fn=None,
-                          surface=None) -> list[dict]:
+                          surface=None, peaks=None) -> list[dict]:
     """Return the strongest masked-ECC translation peaks.
 
     Each dict carries subpixel sx/sy in pixels, cc, and integer peak indices.
@@ -171,18 +204,11 @@ def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
         shifts, ecc, _ = masked_ecc_surface(visible, thermal, joint, max_shift_px)
     else:
         shifts, ecc = surface[0], surface[1]
-    valid = np.isfinite(ecc)
-    if not np.any(valid):
-        return []
-    surface = np.where(valid, ecc, -np.inf)
-    local_max = maximum_filter(surface, size=2 * nms_px + 1,
-                               mode="constant", cval=-np.inf)
-    peak_indices = np.argwhere(valid & (surface >= local_max - 1e-12))
+    if peaks is None:
+        peaks = masked_ecc_peaks(ecc, nms_px)
+    peak_indices, scores, order = peaks
     if len(peak_indices) == 0:
-        iy, ix = np.unravel_index(np.nanargmax(ecc), ecc.shape)
-        peak_indices = np.array([[iy, ix]])
-    scores = ecc[peak_indices[:, 0], peak_indices[:, 1]]
-    order = np.argsort(scores)[::-1]
+        return []
     chosen: list[dict] = []
     for index in order:
         iy, ix = int(peak_indices[index, 0]), int(peak_indices[index, 1])
