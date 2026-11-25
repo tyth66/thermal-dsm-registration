@@ -1,4 +1,4 @@
-"""High-pass DSM registration and planimetric field estimation."""
+"""DSM registration and planimetric field estimation."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -8,31 +8,33 @@ from pathlib import Path
 import cv2
 import numpy as np
 import rasterio
+from scipy.stats import chi2
 from rasterio.transform import Affine, from_origin
 from rasterio.warp import Resampling, reproject
 
 from .dsm_sampling import elevation_range_for
 from .masked_ecc import (
-    AMBIGUITY_MARGIN, FB_TOLERANCE_M, SIGMA0_M, SOFTMAX_BETA,
-    estimate_period_m, masked_ecc_candidates,
+    CANDIDATE_MODE_MASS_MIN, SIGMA0_M, SOFTMAX_BETA,
+    candidate_mode_quality, estimate_period_m, masked_ecc_candidates,
 )
 # Reuse the single projected-metre CRS predicate instead of duplicating it: a
 # DSM grid is only meaningful when both rasters share one metric, north-up frame.
 from .visible_world_model import _is_metre_projected
 
-# The station's planimetric drift domain is estimated from the observations
-# themselves (same precedent as the adaptive DSM elevation window): a fixed
-# clip calibrated on one station silently discards real observations on a
-# station whose drift is several metres. Each axis gets
-# center = median(shift), scale = 1.4826 * MAD, bound = max(floor, 3 * scale)
-# and the valid domain is [center - bound, center + bound]. The 1.5 m floor
-# keeps the domain usable when the MAD is ~0 (uniform drift); a periodic
-# self-similarity alias (e.g. the 17.67 m dy tile on the 141 station) still
-# falls outside every axis domain, so it is discarded as an invalid
-# measurement rather than a low-quality one. True drift above the floor is
-# preserved because the domain is centred on the observed drift.
-DISPLACEMENT_BOUND_FLOOR_M = 1.5
-DISPLACEMENT_BOUND_SIGMA = 3.0
+# The station drift domain is a 2-D density mode estimated from the tile
+# displacements themselves.  A joint mode is used instead of two marginal
+# modes: a rectangular per-axis box can contain combinations of dx/dy that
+# have no observations, and it ignores the correlation between axes.  The
+# estimator is a deterministic multi-start mean-shift on a Gaussian KDE,
+# followed by a 99.5% Mahalanobis ellipse.  The covariance floor keeps the
+# domain elliptical instead of collapsing to a line when the drift is uniform.
+DISPLACEMENT_DOMAIN_CONFIDENCE = 0.995
+DISPLACEMENT_DOMAIN_BANDWIDTH = 0.8
+DISPLACEMENT_DOMAIN_MIN_OBSERVATIONS = 8
+DISPLACEMENT_DOMAIN_MIN_CLUSTER = 6
+DISPLACEMENT_DOMAIN_MAD_FLOOR_M = 0.15
+DISPLACEMENT_DOMAIN_COVARIANCE_FLOOR_M2 = 0.25
+DISPLACEMENT_DOMAIN_SEED_GRID = 7
 
 
 def load_grid(visible: Path, thermal: Path, resolution: float,
@@ -79,28 +81,6 @@ def load_grid(visible: Path, thermal: Path, resolution: float,
     return visible_z, visible_valid, thermal_z, thermal_valid, transform, (west, north)
 
 
-def highpass(array: np.ndarray, valid: np.ndarray, sigma_px: float,
-             minimum_weight: float = 0.5) -> np.ndarray:
-    """High-pass elevation with nodata-aware normalized Gaussian filtering.
-
-    Invalid pixels are excluded from the local mean instead of being filled with
-    an arbitrary median.  Pixels whose local valid weight is too low are
-    protected (set to zero) so a nodata boundary cannot create a false edge.
-    """
-    valid = np.asarray(valid, bool)
-    values = np.where(valid, np.nan_to_num(array, nan=0.0), 0.0).astype(np.float32)
-    weights = valid.astype(np.float32)
-    weighted_sum = cv2.GaussianBlur(values, (0, 0), sigma_px)
-    weight_sum = cv2.GaussianBlur(weights, (0, 0), sigma_px)
-    local_mean = np.divide(weighted_sum, weight_sum,
-                           out=np.zeros_like(weighted_sum),
-                           where=weight_sum > 1e-6)
-    high = values - local_mean
-    high[~valid] = 0.0
-    high[weight_sum < float(minimum_weight)] = 0.0
-    return high
-
-
 def pixel_shift_to_world(shift_x: float, shift_y: float,
                         resolution_m: float):
     """Convert ECC/phase pixel shifts to world EN displacement.
@@ -141,25 +121,25 @@ def _competing_separation(candidates, resolution, cc_margin=0.02):
                 for item in close), default=0.0)
 
 
-def _register_tile(visible_high, thermal_high, joint, transform, resolution,
+def _register_tile(visible, thermal, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int,
                    prior_radius_m: float = 2.0,
-                   min_valid_fraction: float = 0.5):
+                   min_valid_fraction: float = 0.5,
+                   dsm_covariance: bool = False):
     """Register one tile and return it as an observation.
 
     The ECC search is computed over the candidate-dependent common mask, not
     over zero-filled nodata pixels.  The best forward peak is paired with the
-    reverse peak (forward-backward consistency), the second forward peak
-    (period ambiguity), and their spread (observation covariance).  A tile is
-    still always a produced observation; the field-fit caller decides whether
-    its flags permit admission.
+    second forward peak (period ambiguity) and their spread (observation
+    covariance).  A tile is still always a produced observation; the field-fit
+    caller decides whether its flags permit admission.
     """
     mask = joint[top:top + tile, left:left + tile]
     valid_fraction = float(mask.mean())
     if valid_fraction < min_valid_fraction:
         return None
-    first = visible_high[top:top + tile, left:left + tile].astype(np.float32).copy()
-    second = thermal_high[top:top + tile, left:left + tile].astype(np.float32).copy()
+    first = visible[top:top + tile, left:left + tile].astype(np.float32).copy()
+    second = thermal[top:top + tile, left:left + tile].astype(np.float32).copy()
     if first[mask].std() < 1e-6 or second[mask].std() < 1e-6:
         return None
     first_n = (first - first.mean()) / (first.std() + 1e-9)
@@ -177,12 +157,9 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
 
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
-        prior=prior, radius_px=radius_px)
+        prior=prior, radius_px=radius_px, dsm_covariance=dsm_covariance)
     if not forward:
         return None
-    reverse = masked_ecc_candidates(
-        second, first, mask, resolution, top_k=1,
-        prior=(-prior[0], -prior[1]), radius_px=radius_px)
     global_forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=1)
     best = forward[0]
@@ -203,16 +180,6 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     shift_y = float(best["sy"])
     dx, dy = pixel_shift_to_world(shift_x, shift_y, resolution)
 
-    if reverse:
-        reverse_best = reverse[0]
-        fb_error = float(np.hypot((shift_x + reverse_best["sx"]) * resolution,
-                                  (shift_y + reverse_best["sy"]) * resolution))
-        reverse_cc = float(reverse_best["cc"])
-    else:
-        fb_error = float("inf")
-        reverse_cc = float("nan")
-    consistent = bool(np.isfinite(fb_error) and fb_error <= FB_TOLERANCE_M)
-
     if len(forward) > 1:
         margin = float(forward[0]["cc"] - forward[1]["cc"])
         separation_m = float(np.hypot(forward[0]["sx"] - forward[1]["sx"],
@@ -223,10 +190,17 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
         separation_m = 0.0
     period_m = estimate_period_m(first, mask, resolution)
     separation_threshold = max(1.0, 0.5 * period_m) if period_m else 1.0
-    ambiguous = bool((margin < AMBIGUITY_MARGIN
-                      and separation_m >= separation_threshold)
-                     or alias_conflict)
-    uniqueness = float(np.clip(margin / AMBIGUITY_MARGIN, 0.0, 1.0))
+    mode_quality = candidate_mode_quality(forward, resolution)
+    candidate_ambiguous = bool(
+        mode_quality["top_mass"] < CANDIDATE_MODE_MASS_MIN
+        and mode_quality["mode_separation_m"] >= separation_threshold)
+    ambiguous = bool(candidate_ambiguous or alias_conflict)
+    if mode_quality["top_mass"] >= CANDIDATE_MODE_MASS_MIN:
+        uniqueness = float(np.clip(
+            (mode_quality["top_mass"] - CANDIDATE_MODE_MASS_MIN)
+            / (1.0 - CANDIDATE_MODE_MASS_MIN), 0.0, 1.0))
+    else:
+        uniqueness = 0.0
 
     competing_separation_m = _competing_separation(forward, resolution)
 
@@ -239,8 +213,7 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
     centered = shifts_px - mean_shift
     covariance_px = (centered.T * pi) @ centered
     covariance_candidate = pixel_covariance_to_world(covariance_px, resolution)
-    covariance_fb = (fb_error ** 2 if np.isfinite(fb_error) else 1.0) * np.eye(2)
-    covariance = covariance_candidate + covariance_fb + (SIGMA0_M ** 2) * np.eye(2)
+    covariance = covariance_candidate + (SIGMA0_M ** 2) * np.eye(2)
     sigma_e = float(np.sqrt(max(covariance[0, 0], 0.0)))
     sigma_n = float(np.sqrt(max(covariance[1, 1], 0.0)))
     sigma_en = float(covariance[0, 1])
@@ -269,92 +242,186 @@ def _register_tile(visible_high, thermal_high, joint, transform, resolution,
         "cc_best": float(best["cc"]),
         "cc_second": float(forward[1]["cc"]) if len(forward) > 1 else float(best["cc"]),
         "candidate_count": len(forward),
+        "candidates": forward,
+        "candidate_mode_count": int(mode_quality["mode_count"]),
+        "candidate_top_mass": float(mode_quality["top_mass"]),
+        "candidate_second_mass": float(mode_quality["second_mass"]),
+        "candidate_mode_separation_m": float(
+            mode_quality["mode_separation_m"]),
+        "candidate_ambiguity": float(1.0 - mode_quality["top_mass"]),
         "uniqueness_observable": bool(len(forward) >= 2),
         "margin": margin,
         "separation_m": separation_m,
         "competing_separation_m": competing_separation_m,
         "period_m": (float(period_m) if period_m is not None else None),
-        "reverse_cc": reverse_cc,
-        "fb_error_m": fb_error,
-        "consistent": consistent,
         "ambiguous": ambiguous,
         "sigma_e": sigma_e,
         "sigma_n": sigma_n,
         "sigma_en": sigma_en,
         # Compatibility: every produced record is an observation.  The field
-        # fit filters on consistent/ambiguous, not on these constants.
+        # fit filters on ambiguous, not on these constants.
         "accepted": True,
         "outlier": False,
     }
 
 
-def _mode_axis_domain(values):
-    """Densest-cluster drift estimate, with the median/MAD estimator as fallback.
-
-    A median/MAD domain can be inflated by a large periodic-alias cluster
-    (the 247 dx observations contain both a near-zero and a +/-5 m mode).
-    The mode estimator centres on the densest histogram bin and takes its
-    local MAD; if the cluster is too small it falls back to median/MAD.
-    """
-    finite = np.asarray([value for value in values if np.isfinite(value)], float)
-    if len(finite) < 8:
-        return _robust_axis_domain(values)
-    low, high = np.percentile(finite, [5.0, 95.0])
-    span = float(high - low)
-    width = max(0.25, min(1.0, span / 12.0)) if span > 0 else 0.5
-    edges = np.arange(float(finite.min()) - width,
-                      float(finite.max()) + 2.0 * width, width)
-    histogram, edges = np.histogram(finite, bins=edges)
-    peak = int(np.argmax(histogram))
-    lower = edges[max(0, peak - 1)]
-    upper = edges[min(len(edges) - 1, peak + 2)]
-    cluster = finite[(finite >= lower) & (finite < upper)]
-    if len(cluster) < max(4, int(round(0.15 * len(finite)))):
-        return _robust_axis_domain(values)
-    center = float(np.median(cluster))
-    scale = 1.4826 * float(np.median(np.abs(cluster - center)))
-    return center, max(DISPLACEMENT_BOUND_FLOOR_M,
-                       DISPLACEMENT_BOUND_SIGMA * scale)
+def _finite_displacement_points(records):
+    """Return the finite (dx, dy) observations as an (N, 2) array."""
+    points = np.asarray(
+        [[float(record["dx_m"]), float(record["dy_m"])]
+         for record in records
+         if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])],
+        float)
+    return points if points.size else np.empty((0, 2), float)
 
 
-def _robust_axis_domain(values):
-    """Return (centre, bound) for one displacement axis, self-estimated.
+def _domain_radius() -> float:
+    return float(np.sqrt(chi2.ppf(DISPLACEMENT_DOMAIN_CONFIDENCE, 2)))
 
-    Non-finite measurements are invalid and must not poison the median/MAD used
-    to estimate the domain; they are dropped here and rejected as invalid
-    measurements by apply_displacement_domain.
-    """
-    values = [value for value in values if np.isfinite(value)]
-    if not values:
-        return 0.0, DISPLACEMENT_BOUND_FLOOR_M
-    array = np.asarray(values, float)
-    center = float(np.median(array))
-    scale = 1.4826 * float(np.median(np.abs(array - center)))
-    return center, max(DISPLACEMENT_BOUND_FLOOR_M,
-                       DISPLACEMENT_BOUND_SIGMA * scale)
+
+def _domain_record(center, covariance, estimator, *, density=None,
+                   bandwidth=None, observations=None) -> dict:
+    """Build the public domain record and floor the covariance eigenvalues."""
+    eigenvalue, eigenvector = np.linalg.eigh(np.asarray(covariance, float))
+    eigenvalue = np.maximum(eigenvalue,
+                            DISPLACEMENT_DOMAIN_COVARIANCE_FLOOR_M2)
+    covariance = eigenvector @ np.diag(eigenvalue) @ eigenvector.T
+    radius = _domain_radius()
+    record = {
+        "center_dx_m": float(center[0]),
+        "center_dy_m": float(center[1]),
+        "covariance_m2": covariance.tolist(),
+        "semiaxis_m": (np.sqrt(eigenvalue) * radius).tolist(),
+        "radius": radius,
+        "confidence": DISPLACEMENT_DOMAIN_CONFIDENCE,
+        "estimator": estimator,
+    }
+    if density is not None:
+        record["mode_density"] = float(density)
+    if bandwidth is not None:
+        record["bandwidth"] = float(bandwidth)
+    if observations is not None:
+        record["observations"] = int(observations)
+    return record
+
+
+def _median_mad_domain(points):
+    """Sparse-data fallback: a 2-D median centre with a floored ellipse."""
+    if len(points):
+        center = np.median(points, axis=0)
+        scale = 1.4826 * np.median(np.abs(points - center), axis=0)
+    else:
+        center = np.zeros(2, float)
+        scale = np.zeros(2, float)
+    scale = np.maximum(scale, np.sqrt(
+        DISPLACEMENT_DOMAIN_COVARIANCE_FLOOR_M2))
+    return _domain_record(center, np.diag(scale ** 2),
+                          "median_mad_fallback",
+                          observations=len(points))
+
+
+def _kde_density(points, center, covariance, bandwidth):
+    inverse = np.linalg.inv(covariance)
+    delta = points - center
+    distance = np.einsum("ij,jk,ik->i", delta, inverse, delta)
+    weights = np.exp(-0.5 * distance / (bandwidth * bandwidth))
+    normalizer = (2.0 * np.pi * bandwidth * bandwidth
+                  * np.sqrt(np.linalg.det(covariance)))
+    return float(weights.sum() / (len(points) * normalizer))
+
+
+def _mean_shift(points, covariance, bandwidth, start):
+    """Iterate to a local KDE mode with a Gaussian kernel."""
+    center = np.asarray(start, float).copy()
+    inverse = np.linalg.inv(covariance)
+    for _ in range(200):
+        delta = points - center
+        distance = np.einsum("ij,jk,ik->i", delta, inverse, delta)
+        weights = np.exp(-0.5 * distance / (bandwidth * bandwidth))
+        total = weights.sum()
+        if total <= 0:
+            break
+        updated = (weights[:, None] * points).sum(axis=0) / total
+        if np.linalg.norm(updated - center) < 1e-8:
+            center = updated
+            break
+        center = updated
+    return center
+
+
+def _two_dimensional_domain(points):
+    """Deterministic multi-start mean-shift, then a Mahalanobis ellipse."""
+    count = len(points)
+    median = np.median(points, axis=0)
+    mad = 1.4826 * np.median(np.abs(points - median), axis=0)
+    scale = np.maximum(mad, DISPLACEMENT_DOMAIN_MAD_FLOOR_M)
+    initial = np.diag(scale ** 2)
+    bandwidth = DISPLACEMENT_DOMAIN_BANDWIDTH * count ** (-1.0 / 6.0)
+
+    low = np.percentile(points, 10.0, axis=0)
+    high = np.percentile(points, 90.0, axis=0)
+    seeds = [median]
+    for x in np.linspace(low[0], high[0], DISPLACEMENT_DOMAIN_SEED_GRID):
+        for y in np.linspace(low[1], high[1], DISPLACEMENT_DOMAIN_SEED_GRID):
+            seeds.append(np.array([x, y], float))
+    modes = []
+    for seed in seeds:
+        center = _mean_shift(points, initial, bandwidth, seed)
+        modes.append((_kde_density(points, center, initial, bandwidth), center))
+    density, center = max(modes, key=lambda item: item[0])
+
+    covariance = initial.copy()
+    radius_squared = chi2.ppf(DISPLACEMENT_DOMAIN_CONFIDENCE, 2)
+    mask = np.ones(count, bool)
+    for _ in range(8):
+        delta = points - center
+        distance = np.einsum("ij,jk,ik->i", delta,
+                             np.linalg.inv(covariance), delta)
+        mask = distance <= radius_squared
+        if mask.sum() < DISPLACEMENT_DOMAIN_MIN_CLUSTER:
+            break
+        raw = np.cov(points[mask].T, bias=True)
+        eigenvalue, eigenvector = np.linalg.eigh(raw)
+        eigenvalue = np.maximum(
+            eigenvalue, DISPLACEMENT_DOMAIN_COVARIANCE_FLOOR_M2)
+        covariance = eigenvector @ np.diag(eigenvalue) @ eigenvector.T
+
+    delta = points - center
+    distance = np.einsum("ij,jk,ik->i", delta,
+                         np.linalg.inv(covariance), delta)
+    if (distance <= radius_squared).sum() < DISPLACEMENT_DOMAIN_MIN_CLUSTER:
+        return _median_mad_domain(points)
+    return _domain_record(center, covariance, "2d_kde_mean_shift",
+                          density=density, bandwidth=bandwidth,
+                          observations=count)
 
 
 def displacement_domain(records) -> dict:
-    """Estimate the per-axis station drift domain with the mode estimator."""
-    center_dx, bound_dx = _mode_axis_domain(
-        [record["dx_m"] for record in records])
-    center_dy, bound_dy = _mode_axis_domain(
-        [record["dy_m"] for record in records])
-    return {"center_dx": center_dx, "bound_dx": bound_dx,
-            "center_dy": center_dy, "bound_dy": bound_dy}
+    """Estimate the joint station-drift mode and its 99.5% ellipse."""
+    points = _finite_displacement_points(records)
+    if len(points) < DISPLACEMENT_DOMAIN_MIN_OBSERVATIONS:
+        return _median_mad_domain(points)
+    return _two_dimensional_domain(points)
 
 
 def apply_displacement_domain(records):
-    """Discard observations outside the self-estimated per-axis drift domain."""
+    """Discard observations outside the joint 2-D drift ellipse."""
     records = list(records)
     measured = [record for record in records
                 if np.isfinite(record["dx_m"]) and np.isfinite(record["dy_m"])]
     domain = displacement_domain(measured)
-    kept = [record for record in measured
-            if (domain["center_dx"] - domain["bound_dx"] <= record["dx_m"]
-                <= domain["center_dx"] + domain["bound_dx"]
-                and domain["center_dy"] - domain["bound_dy"] <= record["dy_m"]
-                <= domain["center_dy"] + domain["bound_dy"])]
+    points = np.asarray([[record["dx_m"], record["dy_m"]]
+                         for record in measured], float)
+    if len(points):
+        center = np.array([domain["center_dx_m"], domain["center_dy_m"]])
+        covariance = np.asarray(domain["covariance_m2"], float)
+        delta = points - center
+        distance = np.einsum("ij,jk,ik->i", delta,
+                             np.linalg.inv(covariance), delta)
+        kept = [record for record, value in zip(measured, distance)
+                if value <= domain["radius"] ** 2]
+    else:
+        kept = []
     return kept, {**domain, "rejected": len(records) - len(kept)}
 
 
@@ -434,15 +501,18 @@ def _edge_tasks(height, width, tile, step, pad):
     return sorted(tasks)
 
 
-def register(visible_high, thermal_high, joint, transform, resolution,
+def register(visible, thermal, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
-             prior_radius_m: float = 2.0, include_boundary: bool = False):
+             prior_radius_m: float = 2.0, include_boundary: bool = False,
+             apply_domain: bool = True, dsm_covariance: bool = False):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
     if height < tile or width < tile:
         print("register: raster %dx%d is smaller than one %dpx tile; no tiles"
               % (width, height, tile))
+        if not apply_domain:
+            return [], {"rejected": 0, "estimator": "raw"}
         return apply_displacement_domain([])
     # The +1 makes the final full tile eligible when the usable extent is an
     # exact multiple of the step; without it the last row/column was dropped.
@@ -451,9 +521,10 @@ def register(visible_high, thermal_high, joint, transform, resolution,
              for column, left in enumerate(range(0, width - tile + 1, step))]
     def process(task):
         row, column, top, left = task
-        return _register_tile(visible_high, thermal_high, joint, transform,
+        return _register_tile(visible, thermal, joint, transform,
                               resolution, tile, row, column, top, left,
-                              prior_radius_m=prior_radius_m)
+                              prior_radius_m=prior_radius_m,
+                              dsm_covariance=dsm_covariance)
     workers = max(1, int(workers))
     if workers > 1 and len(tasks) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -466,9 +537,10 @@ def register(visible_high, thermal_high, joint, transform, resolution,
         if boundary_tasks:
             def process_boundary(task):
                 record = _register_tile(
-                    visible_high, thermal_high, joint, transform, resolution,
+                    visible, thermal, joint, transform, resolution,
                     tile, 0, 0, task["top"], task["left"],
-                    prior_radius_m=prior_radius_m, min_valid_fraction=0.50)
+                    prior_radius_m=prior_radius_m, min_valid_fraction=0.50,
+                    dsm_covariance=dsm_covariance)
                 if record is None:
                     return None
                 sample = transform * (task["sample_x"] + 0.5,
@@ -487,9 +559,9 @@ def register(visible_high, thermal_high, joint, transform, resolution,
             results.extend(boundary_results)
         else:
             pad = tile // 2
-            padded_visible = np.pad(visible_high, ((pad, pad), (pad, pad)),
+            padded_visible = np.pad(visible, ((pad, pad), (pad, pad)),
                                     mode="constant", constant_values=0.0)
-            padded_thermal = np.pad(thermal_high, ((pad, pad), (pad, pad)),
+            padded_thermal = np.pad(thermal, ((pad, pad), (pad, pad)),
                                     mode="constant", constant_values=0.0)
             padded_joint = np.pad(joint, ((pad, pad), (pad, pad)),
                                   mode="constant", constant_values=False)
@@ -500,7 +572,8 @@ def register(visible_high, thermal_high, joint, transform, resolution,
                 return _register_tile(
                     padded_visible, padded_thermal, padded_joint,
                     padded_transform, resolution, tile, 0, 0, top, left,
-                    prior_radius_m=prior_radius_m, min_valid_fraction=0.25)
+                    prior_radius_m=prior_radius_m, min_valid_fraction=0.25,
+                    dsm_covariance=dsm_covariance)
             if workers > 1 and len(edge_tasks) > 1:
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     edge_results = list(pool.map(process_edge, edge_tasks))
@@ -508,4 +581,6 @@ def register(visible_high, thermal_high, joint, transform, resolution,
                 edge_results = [process_edge(task) for task in edge_tasks]
             results.extend(edge_results)
     raw = [record for record in results if record is not None]
+    if not apply_domain:
+        return raw, {"rejected": 0, "estimator": "raw"}
     return apply_displacement_domain(raw)

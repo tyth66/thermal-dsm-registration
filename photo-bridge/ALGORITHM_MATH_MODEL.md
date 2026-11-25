@@ -1,10 +1,6 @@
 # 可见光—热像 DSM 平面配准数学模型
 
-版本：单一路径生产模型  
-代码基线：03c0bb9  
-测试：89 passed
-
-当前正式实现与参数见 [CURRENT_ALGORITHM.md](CURRENT_ALGORITHM.md)。
+实现与运行参数见 [CURRENT_ALGORITHM.md](CURRENT_ALGORITHM.md)。本文档描述生产模型；全原始候选联合实验模型见 [CANDIDATE_FIELD_EM.md](CANDIDATE_FIELD_EM.md)。
 
 ## 1. 目标与范围
 
@@ -39,7 +35,10 @@
 - \(W_s\)：瓦片步长；
 - \(D_s\)：场支撑半径；
 - \(J_v(x),J_t(x)\)：可见/热像有效掩膜；
-- \(J(x)=J_v(x)\land J_t(x)\)：联合掩膜。
+- \(J(x)=J_v(x)\land J_t(x)\)：联合掩膜；
+- \(z_v(x),z_t(x)\)：可见/热像 DSM 高程；
+- \(\Sigma_i\)：第 \(i\) 个瓦片的 2×2 观测协方差；
+- \(P_i=\Sigma_i^{-1}\)：其精度矩阵。
 
 ## 3. 公共网格与预处理
 
@@ -55,29 +54,6 @@ J(x)=J_v(x)\land J_t(x)
 \]
 
 无效像元不参与相关，也不以零值参与归一化。
-
-### 3.3 Gaussian 高通
-
-对 DSM \(z(x)\)：
-
-\[
-h(x)=z(x)-\frac{(G_\sigma*(Jz))(x)}{(G_\sigma*J)(x)}
-\]
-
-其中：
-
-\[
-G_\sigma(x)=\frac{1}{2\pi\sigma^2}
-\exp\left(-\frac{\|x\|^2}{2\sigma^2}\right)
-\]
-
-当前生产默认关闭高通：
-
-\[
-\sigma=0
-\]
-
-自动高通估计已从正式路径移除；当前 run 296 不使用高通。
 
 ## 4. 分块与场支撑
 
@@ -98,12 +74,6 @@ W_s=W_t/2
 \]
 
 像素数取偶数，保证精确 50% 重叠。
-
-run 296：
-
-\[
-W_t=29.6\ \text{m},\qquad W_s=14.8\ \text{m}
-\]
 
 若第一次尝试 accepted 少于 6，则 tile/step 减半重试，最多 3 次；取 accepted 最多的尝试。
 
@@ -126,7 +96,7 @@ S(p)=\frac{\sum_i w_i e^{-\|p-p_i\|^2/(2(T/2)^2)}}{\sum_i w_i}
 
 不设支撑置信度门限 \(C_{\min}\)。
 
-其中 \(d_{\min}\) 是到最近观测中心的距离。
+其中 \(d_{\min}\) 是到最近观测中心的距离。\(D_s\) 是拟合阶段的支撑计划参数；交付硬保护使用 \(2T\)。
 
 ## 5. 单瓦片观测
 
@@ -144,14 +114,14 @@ vf_k=\frac{1}{|T_k|}\sum_{x\in T_k}J(x)
 vf_k\ge0.5
 \]
 
-高通纹理标准差不足时，该瓦片不产生观测。
+纹理标准差不足时，该瓦片不产生观测。
 
 ### 5.2 粗初值
 
 瓦片降采样一半，归一化后做 ECC，得到粗位移：
 
 \[
-s_0=\mathrm{ECC}_{1/2}(h_v,h_t)
+s_0=\mathrm{ECC}_{1/2}(z_v,z_t)
 \]
 
 还原：
@@ -189,23 +159,23 @@ C_m(s)=\sum_x M_s(x)
 \]
 
 \[
-C_v(s)=\sum_x J(x)J(x+s)h_v(x)
+C_v(s)=\sum_x J(x)J(x+s)z_v(x)
 \]
 
 \[
-C_t(s)=\sum_x J(x)J(x+s)h_t(x+s)
+C_t(s)=\sum_x J(x)J(x+s)z_t(x+s)
 \]
 
 \[
-C_{vv}(s)=\sum_x J(x)J(x+s)h_v(x)^2
+C_{vv}(s)=\sum_x J(x)J(x+s)z_v(x)^2
 \]
 
 \[
-C_{tt}(s)=\sum_x J(x)J(x+s)h_t(x+s)^2
+C_{tt}(s)=\sum_x J(x)J(x+s)z_t(x+s)^2
 \]
 
 \[
-C_{vt}(s)=\sum_x J(x)J(x+s)h_v(x)h_t(x+s)
+C_{vt}(s)=\sum_x J(x)J(x+s)z_v(x)z_t(x+s)
 \]
 
 归一化相关：
@@ -224,28 +194,12 @@ C_{vt}-\frac{C_vC_t}{C_m}
 
 整数峰再做抛物线亚像素插值。
 
-### 5.4 候选与一致性
+### 5.4 候选与 alias 冲突
 
 前向只保留 prior 窗口内 top-5：
 
 \[
 \|s-\hat s_0\|_2\le R_p
-\]
-
-反向使用：
-
-\[
--\hat s_0
-\]
-
-反向一致性：
-
-\[
-e_{fb}=r\|s^++s^-\|_2
-\]
-
-\[
-\text{consistent}=[e_{fb}\le0.20\ \text{m}]
 \]
 
 全局 top-1 用于 alias 冲突：
@@ -256,40 +210,117 @@ d_{\rm global}>R_p
 \rho_{\rm global}>\rho_{\rm best}+0.05
 \]
 
-### 5.5 歧义
+### 5.5 二维候选 mode 质量
 
-前向候选：
+前向 top-5 候选为：
 
 \[
-\Delta\rho=\rho_1-\rho_2
+C=\{(s_j,\rho_j)\}_{j=1}^{K},\quad K\le5
+\]
+
+候选权重：
+
+\[
+\pi_j=\mathrm{softmax}\left(50(\rho_j-\max_k\rho_k)\right)
+\]
+
+每个候选还携带相关面峰值的归一化逆 Hessian：
+
+\[
+C^{\rm px}_{ij}=\frac{(-H_{ij})^{-1}}
+{\tfrac12\mathrm{tr}((-H_{ij})^{-1})}
+\]
+
+其特征值保持各向异性，均值方差归一为 1 px²。该协方差当前用于诊断/联合 EM 原型，不进入生产歧义门。
+
+可选的 DSM 高程 profile 协方差为：
+
+\[
+Q_{ij}=-\nabla_s^2\rho_i(s_{ij}),\qquad
+\beta_{ij}^{\rm eff}=\frac{\operatorname{SST}_{v,i}}{\sigma_z^2}\rho_{ij},\qquad
+C_{ij}=(\beta_{ij}^{\rm eff}Q_{ij})^{-1}
+\]
+
+该路线属于候选级模型：\(\pi_{ij}\) 仍是条件 softmax，\(C_{ij}\) 只进入测量协方差，不乘 \(|C_{ij}|^{1/2}\)。当前生产仍使用归一化逆 Hessian；DSM 协方差为可选/实验路径，未默认启用。
+
+实验性歧义信息：单 tile 的负对数边缘似然曲率为
+
+\[
+\mathcal I_i=W_i-D_i,\qquad
+W_i=\sum_jq_{ij}V_{ij}^{-1},\qquad
+D_i=\operatorname{Cov}_{q_i}(V_{ij}^{-1}(s_{ij}-f_i))
+\]
+
+它只用于诊断/不确定性，不替代 M 步的 \(W_i\)。对应的局部场参数后验Hessian为
+
+\[
+H_{\rm obs}=\Lambda+\sum_i\Phi_i^T\mathcal I_i\Phi_i,\qquad
+\Sigma_f(p)=\Phi(p)H_{\rm obs}^{-1}\Phi(p)^T
 \]
 
 \[
-d_s=r\|s_1-s_2\|_2
+\Sigma_d(p)=\Sigma_f(p)+\sigma_f^2I
 \]
 
-由高通自相关估计主周期 \(P\)。
+这是单个后验模式附近的局部 Laplace 不确定性，不覆盖 coherent alias 的全局错配模式。
 
-歧义：
+潜在变量熵拆分为：
+
+\[
+H_i^{\rm valid}=-m_i\log m_i-(1-m_i)\log(1-m_i)
+\]
+
+\[
+H_i^{\rm alias}=-\sum_jw_{ij}\log w_{ij}
+\]
+
+\[
+H_i^{\rm total}=H_i^{\rm valid}+m_iH_i^{\rm alias}
+\]
+
+这样可以区分“确定无效、有效性不明确、确定有效但候选歧义、唯一对应”四种状态。
+
+在候选位移空间做二维 Gaussian mean-shift：
+
+\[
+w_j(c)=\exp\left(-\frac{\|s_j-c\|^2}{2h_c^2}\right)
+\]
+
+\[
+c^{(t+1)}=\frac{\sum_j \pi_j w_j(c^{(t)})s_j}
+{\sum_j \pi_j w_j(c^{(t)})}
+\]
+
+其中 \(h_c=2\) px。收敛后得到 mode \(m_1,m_2,\dots\)，其质量为：
+
+\[
+M_k=\sum_{j\in\mathrm{mode}_k}\pi_j
+\]
+
+歧义判定：
 
 \[
 \text{ambiguous}=
 \left[
-\Delta\rho<0.02
+M_1<0.73
 \land
-d_s\ge\max(1,0.5P)
+d(m_1,m_2)\ge\max(1,0.5P)
 \right]
 \lor
 \text{alias\_conflict}
 \]
 
-当只有一个候选时：
+其中 \(d(m_1,m_2)\) 是两个 mode 的米制距离，\(P\) 是可见光 tile 自相关主周期。
+
+0.73 来自旧 margin 阈值的等价点：两个候选时
 
 \[
-margin=1.0
+M_1=\frac{1}{1+e^{-50\Delta\rho}}
 \]
 
-这只是“没有第二候选可比较”，不是唯一性证明。
+当 \(\Delta\rho=0.02\) 时，\(M_1=0.731\)。
+
+若所有候选合并成一个 mode，则 \(M_1=1\)，不判歧义；但“只有一个 mode”仍不等于几何唯一性证明。`margin`、`cc_second`、`separation_m` 继续保留为诊断量。
 
 ### 5.6 观测协方差
 
@@ -321,7 +352,6 @@ B=\mathrm{diag}(r,-r)
 \[
 \Sigma_i=
 \Sigma_{\rm EN}
-+e_{fb}^2I
 +\sigma_0^2I
 \]
 
@@ -329,7 +359,7 @@ B=\mathrm{diag}(r,-r)
 \sigma_0=0.05\ \text{m}
 \]
 
-该协方差只作为观测诊断保存；当前场拟合不使用 \(\Sigma_i\) 加权。
+该协方差用于 8.4.1 的 RBF 广义加权。
 
 ### 5.7 观测记录
 
@@ -340,7 +370,7 @@ B=\mathrm{diag}(r,-r)
 - 目标 \(t_i=p_i+d_i\)；
 - 相关系数 \(cc_i\)；
 - 质量权重 \(qf_i=vf_i^{1.5}\)；
-- consistent/ambiguous；
+- ambiguous；
 - margin/separation/period；
 - candidate_count；
 - 协方差字段；
@@ -348,60 +378,132 @@ B=\mathrm{diag}(r,-r)
 
 ## 6. 位移域
 
-### 6.1 mode 域
+### 6.1 二维联合密度
 
-对每个轴，取有限位移值。
-
-若样本少于 8，回退到稳健中位数/MAD。
-
-否则：
-
-1. 取 5% 与 95% 分位；
-2. 直方图带宽：
+对每个 tile 的位移观测：
 
 \[
-w=\max\left(0.25,\min\left(1,\frac{P_{95}-P_5}{12}\right)\right)
+d_i=(dx_i,dy_i)
 \]
 
-3. 取最密直方图簇，并向两侧扩展一个 bin；
-4. 若簇样本少于：
+用 Gaussian KDE 估计二维联合密度：
 
 \[
-\max(4,0.15N)
-\]
-
-回退到稳健中位数/MAD。
-
-否则：
-
-\[
-c_j=\mathrm{median}(C_{\rm mode})
+\hat p_H(d)=\frac{1}{N}\sum_i
+K_H(d-d_i)
 \]
 
 \[
-s_j=1.4826\cdot\mathrm{MAD}(C_{\rm mode})
+K_H(u)=(2\pi)^{-1}|H|^{-1/2}
+\exp\left(-\frac12u^T H^{-1}u\right)
+\]
+
+带宽矩阵：
+
+\[
+H=h^2S_0
 \]
 
 \[
-b_j=\max(1.5,3s_j)
+h=0.8N^{-1/6}
 \]
 
-### 6.2 域筛选
-
-对每轴：
+其中 \(S_0\) 是逐轴 MAD 的鲁棒初始协方差：
 
 \[
-|d_{ij}-c_j|\le b_j
+S_0=\mathrm{diag}\left(
+(1.4826\,\mathrm{MAD}(dx))^2,
+(1.4826\,\mathrm{MAD}(dy))^2
+\right)
+\]
+
+MAD 尺度下限为 0.15 m。
+
+二维 mode：
+
+\[
+\hat c=\arg\max_d \hat p_H(d)
+\]
+
+用 mean-shift 迭代求解：
+
+\[
+w_i(c)=\exp\left(-\frac12(d_i-c)^T H^{-1}(d_i-c)\right)
+\]
+
+\[
+c^{(t+1)}=\frac{\sum_i w_i(c^{(t)})d_i}
+{\sum_i w_i(c^{(t)})}
+\]
+
+为避开局部 mode，使用确定性多起点：中位数点，加上 10%–90% 分位范围内 \(7\times7\) 网格；取 KDE 密度最高的收敛点。
+
+### 6.2 主簇协方差与椭圆
+
+给定 mode \(\hat c\)，用 Mahalanobis 椭圆迭代主簇：
+
+\[
+C=\left\{i:(d_i-\hat c)^T S^{-1}(d_i-\hat c)
+\le\chi^2_{2,0.995}\right\}
+\]
+
+\[
+\chi^2_{2,0.995}=10.5966
+\]
+
+\[
+S=\mathrm{Cov}(C)
+\]
+
+对 \(S\) 的特征值施加下限：
+
+\[
+\lambda_{\min}(S)\ge0.25\ \mathrm{m}^2
+\]
+
+接受域为：
+
+\[
+D=\left\{d:(d-\hat c)^T S^{-1}(d-\hat c)
+\le\chi^2_{2,0.995}\right\}
+\]
+
+即 99.5% 置信椭圆。
+
+若观测少于 8 个，或主簇少于 6 个，回退到二维 median/MAD：
+
+\[
+\hat c=\mathrm{median}(d_i)
+\]
+
+\[
+S=\mathrm{diag}\left(
+(1.4826\,\mathrm{MAD}(dx))^2,
+(1.4826\,\mathrm{MAD}(dy))^2
+\right)
+\]
+
+并同样施加协方差下限。
+
+### 6.3 域筛选与统计
+
+保留：
+
+\[
+(d_i-\hat c)^T S^{-1}(d_i-\hat c)
+\le\chi^2_{2,0.995}
 \]
 
 非有限位移不参与域估计，并作为无效测量被拒绝。
 
-### 6.3 域统计
-
 输出：
 
-- center_dx、bound_dx；
-- center_dy、bound_dy；
+- center_dx_m、center_dy_m；
+- covariance_m2；
+- semiaxis_m；
+- radius；
+- confidence；
+- estimator；
 - rejected。
 
 ## 7. 观测集合
@@ -410,8 +512,6 @@ b_j=\max(1.5,3s_j)
 
 \[
 \text{accepted}=
-\text{consistent}=1
-\land
 \text{ambiguous}=0
 \]
 
@@ -421,34 +521,52 @@ b_j=\max(1.5,3s_j)
 
 ### 8.1 模型形式
 
-\[
-f(p)=Ap+b+g(p)
-\]
+先区分坐标映射与位移场。
+
+坐标映射：
 
 \[
-A=
+T(p)=p+f(p)
+\]
+
+位移场：
+
+\[
+f(p)=B(p-p_c)+t_0+g(p)
+\]
+
+其中 \(p_c\) 是场站参考中心，\(x=p-p_c\)。
+
+\[
+B=A-I=
 \begin{pmatrix}
-a & -b\\
-b & a
+u & -v\\
+v & u
 \end{pmatrix}
 \]
 
-\(g\) 是 Gaussian RBF 残差。
+\(A\) 是真正的相似变换矩阵，\(B=A-I\) 是位移梯度矩阵。\(g\) 是 Gaussian RBF 残差。
 
-位移：
-
-\[
-d(p)=f(p)-p
-\]
+零位移状态：
 
 \[
-q=p+d(p)
+B=0,\qquad t_0=0,\qquad g=0
 \]
+
+此时 \(T(p)=p\)，\(f(p)=0\)。
+
+当前代码已按中心化参数保存 \(B,t_0,p_c\)，求值返回 \(B(p-p_c)+t_0+g\)。模型序列化仍保留绝对映射键以兼容旧消费者：
+
+\[
+t_{\rm abs}=t_0-Bp_c,\qquad A=I+B
+\]
+
+序列化中的 `matrix` 是 \(A\)，`translation` 是 \(t_{\rm abs}\)；内部拟合/求值使用 \(B,t_0,p_c\)。
 
 ### 8.2 观测权重
 
 \[
-w_i=cc_i\cdot qf_i\cdot s_i
+w_i=\frac{cc_i\cdot qf_i}{n_i}\cdot s_i
 \]
 
 其中：
@@ -456,6 +574,8 @@ w_i=cc_i\cdot qf_i\cdot s_i
 \[
 qf_i=vf_i^{1.5}
 \]
+
+\(n_i\) 是 tile footprint 内平均覆盖数（tile/8 格网离散积分）。
 
 \(s_i\) 是最近邻支撑权重：
 
@@ -479,16 +599,21 @@ s_i=
 
 ### 8.3 相似变换 IRLS
 
+在中心化位移参数下：
+
 \[
-\min_{A,b}\sum_i w_i
-\|t_i-(Ap_i+b)\|^2
+\min_{B,t_0}\sum_i w_i
+\left\|d_i-\left[B(p_i-p_c)+t_0\right]\right\|^2
 \]
 
 最终：
 
 \[
-\epsilon_i=\|t_i-(Ap_i+b)\|
+\epsilon_i=
+\left\|d_i-\left[B(p_i-p_c)+t_0\right]\right\|
 \]
+
+当前代码直接拟合 \(B,t_0\)；序列化时再换算为 \(A,t_{\rm abs}\) 以保持兼容。
 
 \[
 \tau=\max(3\cdot1.4826\mathrm{MAD}(\epsilon),0.5)
@@ -515,7 +640,7 @@ w_i,&i\in\text{inlier}\\
 ### 8.4 RBF 残差
 
 \[
-r_i=t_i-(Ap_i+b)
+r_i=d_i-\left[B(p_i-p_c)+t_0\right]
 \]
 
 \[
@@ -529,17 +654,69 @@ K_{ij}=
 L=\max(2.5W_t,4\delta_0)
 \]
 
-\[
-(K^TW^{fit}K+\lambda I)c
-=
-K^TW^{fit}r
-\]
-
-默认：
+RBF 系数由 8.4.1 的协方差广义加权块系统求解；默认：
 
 \[
 \lambda=0.1
 \]
+
+### 8.4.1 协方差广义加权
+
+每个瓦片还携带 ECC 候选离散度得到的 2×2 协方差：
+
+\[
+\Sigma_i=
+\begin{pmatrix}
+\sigma_{e,i}^2 & \sigma_{en,i}\\
+\sigma_{en,i} & \sigma_{n,i}^2
+\end{pmatrix}
+\]
+
+记其逆为：
+
+\[
+P_i=\Sigma_i^{-1}=
+\begin{pmatrix}
+a_i & b_i\\
+b_i & d_i
+\end{pmatrix}
+\]
+
+为保持 \(\lambda\) 与协方差尺度无关，令归一化精度
+
+\[
+\tilde P_i=\frac{P_i}{\mathrm{median}(\tfrac12(a_i+d_i))}
+\]
+
+下文将归一化后的 \(\tilde P_i\) 简记为 \(P_i\)，其元素 \(a_i,b_i,d_i\) 均为归一化后的精度。
+
+令 \(u_i=w_i^{fit}\) 为 8.3 的 IRLS 拟合权重。二维 RBF 残差的广义最小二乘为：
+
+\[
+\min_{C}\sum_i
+u_i
+(r_i-\phi_i C)^T P_i (r_i-\phi_i C)
++\lambda\|C\|_F^2
+\]
+
+其中 \(C\) 是 \(N\times2\) 的 RBF 系数矩阵，\(\phi_i\) 是第 \(i\) 行的核向量。对 \(c_e,c_n\) 求导得到 2N×2N 块系统：
+
+\[
+\begin{pmatrix}
+K^T\operatorname{diag}(u_i a_i)K+\lambda I &
+K^T\operatorname{diag}(u_i b_i)K\\
+K^T\operatorname{diag}(u_i b_i)K &
+K^T\operatorname{diag}(u_i d_i)K+\lambda I
+\end{pmatrix}
+\begin{pmatrix}c_e\\c_n\end{pmatrix}
+=
+\begin{pmatrix}
+K^T(u_i a_i r_e+u_i b_i r_n)\\
+K^T(u_i b_i r_e+u_i d_i r_n)
+\end{pmatrix}
+\]
+
+当 \(\Sigma_i=\sigma_0^2I\) 时，\(P_i=(1/\sigma_0^2)I\)，GLS 退化为各向同性标量权重；这是模型的一个特例，不是单独的估计路径。
 
 ### 8.5 场求值
 
@@ -551,7 +728,7 @@ g(p)=\sum_i c_i
 \]
 
 \[
-d(p)=Ap+b-p+g(p)
+f(p)=B(p-p_c)+t_0+g(p)
 \]
 
 核密度：
@@ -577,7 +754,7 @@ w(p)=\frac1N\sum_i
 \[
 \bar\delta_P=
 \frac15\sum_{j=1}^5
-\left(f(p_j)-p_j\right)
+f(p_j)
 \]
 
 \[
@@ -694,30 +871,47 @@ payload 只按：
 - grid 统计；
 - field shift 统计。
 
-## 11. 当前默认参数
+`attempts[].displacement_domain_m` 包含：
+
+- center_dx_m、center_dy_m；
+- covariance_m2；
+- semiaxis_m；
+- radius、confidence、estimator。
+
+每个 tile 记录还包含：
+
+- candidate_mode_count；
+- candidate_top_mass、candidate_second_mass；
+- candidate_mode_separation_m；
+- candidate_ambiguity。
+
+## 11. 模型参数
 
 | 参数 | 值 |
 |---|---:|
 | 公共网格 \(r\) | 0.1 m |
 | 请求 tile 上限 | 40 m |
 | tile 面积目标 | 图像 1% |
-| run 296 tile/step | 29.6 / 14.8 m |
-| 高通 \(\sigma\) | 0（关闭） |
 | prior 半径 | 2 m |
-| FB 容差 | 0.20 m |
-| 歧义 margin | 0.02 |
+| 旧歧义 margin（诊断） | 0.02 |
+| 候选 mode 质量下限 | 0.73 |
+| 候选 mean-shift 带宽 | 2 px |
 | \(\sigma_0\) | 0.05 m |
-| 位移域 | mode |
+| 位移域 | 二维 KDE + mean-shift |
+| 域置信度 | 0.995 |
+| KDE 带宽系数 | 0.8 |
+| 域最少观测 | 8 |
+| 域协方差下限 | 0.25 m² |
 | 场支撑 | 高斯置信 + \(2T\) 硬保护 |
 | 支撑 \(C_{\min}\) | 无 |
 | 覆盖归一化 | tile/8 格网 |
 | 相似变换 | q-only 加权 IRLS |
-| RBF | coefficient ridge |
+| RBF 权重 | 协方差 GLS |
+| RBF 正则 | coefficient ridge |
 | 岭参数 \(\lambda\) | 0.1 |
-| RBF 核长 \(L\) | 自动，run 296 = 74 m |
+| RBF 核长 | \(L=\max(2.5W_t,4\delta_0)\) |
 | 边界衰减 | Gaussian \(\sigma=T\)，范围 \(2T\) |
 | 面板映射 | rigid |
-| edge confidence 门限 | 关闭 |
 | 交付口径 | conservative_valid |
 
 ## 12. 控制流与失败处理
@@ -727,7 +921,7 @@ payload 只按：
 - 瓦片有效比例不足：跳过；
 - 纹理不足或 ECC 非有限：跳过；
 - accepted 少于 6：缩小 tile 重试；
-- mode 簇过小：回退稳健中位数/MAD；
+- 二维模式簇过小：回退二维 median/MAD 椭圆；
 - 场支撑不足：标记 unsupported；
 - 面板源/场/目标无效：标记 conservative 失败；
 - 无可用观测：抛错，不生成空场。
@@ -754,4 +948,4 @@ payload 只按：
 
 在缺少独立锚点时，模型输出应被视为相对配准候选，而不是绝对几何真值。
 
-边界单侧支撑、RBF 衰减和边界外推问题见 [BOUNDARY_EXTRAPOLATION.md](BOUNDARY_EXTRAPOLATION.md)。
+边界单侧支撑与边界外推问题见 [BOUNDARY_EXTRAPOLATION.md](BOUNDARY_EXTRAPOLATION.md)。

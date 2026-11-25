@@ -30,7 +30,6 @@ DEFAULT_THERMAL_ORTHO = (REPO_ROOT / "analysis/ortho-data"
 PLANIMETRIC_RESOLUTION_M = 0.1
 PLANIMETRIC_TILE_M = 40.0
 PLANIMETRIC_STEP_M = 20.0
-PLANIMETRIC_HIGHPASS_SIGMA_M = 1.5
 PLANIMETRIC_FIELD_MAX_DISTANCE_M = 30.0
 PLANIMETRIC_WORKERS = min(8, os.cpu_count() or 1)
 
@@ -49,7 +48,6 @@ class PipelineConfig:
     planimetric_resolution_m: float = PLANIMETRIC_RESOLUTION_M
     planimetric_tile_m: float = PLANIMETRIC_TILE_M
     planimetric_step_m: float = PLANIMETRIC_STEP_M
-    planimetric_highpass_sigma_m: float = 0.0
     planimetric_field_max_distance_m: float = PLANIMETRIC_FIELD_MAX_DISTANCE_M
     planimetric_workers: int = PLANIMETRIC_WORKERS
     planimetric_regularized_kernel_m: float | None = None
@@ -68,8 +66,6 @@ class PipelineConfig:
                      "planimetric_step_m", "planimetric_field_max_distance_m"):
             if not getattr(self, name) > 0:
                 raise ValueError("%s must be positive" % name)
-        if self.planimetric_highpass_sigma_m < 0:
-            raise ValueError("planimetric_highpass_sigma_m must be non-negative")
 
 
 def _build_world_model(config: PipelineConfig) -> Path:
@@ -114,7 +110,6 @@ def run_pipeline(config: PipelineConfig) -> dict:
             resolution_m=config.planimetric_resolution_m,
             tile_m=config.planimetric_tile_m,
             step_m=config.planimetric_step_m,
-            highpass_sigma_m=config.planimetric_highpass_sigma_m,
             field_max_distance_m=config.planimetric_field_max_distance_m,
             warp_threads=config.planimetric_workers,
             ecc_workers=config.planimetric_workers,
@@ -152,8 +147,6 @@ def main(argv=None) -> int:
     parser.add_argument("--planimetric-resolution-m", type=float, default=PLANIMETRIC_RESOLUTION_M)
     parser.add_argument("--planimetric-tile-m", type=float, default=PLANIMETRIC_TILE_M)
     parser.add_argument("--planimetric-step-m", type=float, default=PLANIMETRIC_STEP_M)
-    parser.add_argument("--planimetric-highpass-sigma-m", type=float, default=0.0,
-                        help="highpass sigma in metres; 0 disables highpass")
     parser.add_argument("--planimetric-field-max-distance-m", type=float, default=PLANIMETRIC_FIELD_MAX_DISTANCE_M)
     parser.add_argument("--planimetric-workers", type=int, default=PLANIMETRIC_WORKERS)
     parser.add_argument("--regularized-kernel-m", type=float, default=None)
@@ -170,7 +163,6 @@ def main(argv=None) -> int:
         planimetric_resolution_m=args.planimetric_resolution_m,
         planimetric_tile_m=args.planimetric_tile_m,
         planimetric_step_m=args.planimetric_step_m,
-        planimetric_highpass_sigma_m=args.planimetric_highpass_sigma_m,
         planimetric_field_max_distance_m=args.planimetric_field_max_distance_m,
         planimetric_workers=args.planimetric_workers,
         planimetric_regularized_kernel_m=args.regularized_kernel_m,

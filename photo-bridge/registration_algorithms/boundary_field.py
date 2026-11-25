@@ -2,8 +2,8 @@
 
 The boundary is divided into overlapping tangent bins.  A small normal/tangent
 model is fitted per side/bin from accepted tile residuals.  Bins without enough
-observations produce no correction and low edge confidence instead of borrowing
-a global coefficient from an unrelated part of the edge.
+observations produce no correction instead of borrowing a global coefficient
+from an unrelated part of the edge.
 """
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ DEFAULT_BAND_M = 40.0
 DEFAULT_BIN_M = 50.0
 MIN_LOCAL_TILES = 4
 DEFAULT_RIDGE = 0.01
-EDGE_CONFIDENCE_WEIGHT_REF = 0.5
-EDGE_CONFIDENCE_MIN = 0.65
 
 _NORMALS = np.array([[-1.0, 0.0], [1.0, 0.0],
                      [0.0, -1.0], [0.0, 1.0]])
@@ -64,9 +62,10 @@ def _tile_data(field):
         [float(tile["residual_e"]) for tile in tiles],
         [float(tile["residual_n"]) for tile in tiles],
     ])
-    matrix = np.asarray(field.matrix, float)
+    gradient = np.asarray(field.displacement_gradient, float)
     translation = np.asarray(field.translation, float)
-    delta = centers @ matrix.T + translation - centers + residual
+    centered = centers - np.asarray(field.center, float)
+    delta = centered @ gradient.T + translation + residual
     weights = np.asarray([float(tile.get("cc", 1.0)) for tile in tiles], float)
     return centers, delta, weights
 
@@ -116,7 +115,6 @@ def _fit_local(field, bounds):
             fits.append({
                 "side": index, "center": float(center),
                 "coefficients": coefficients,
-                "count": int(selected.sum()),
             })
     return fits
 
@@ -126,18 +124,17 @@ def evaluate_boundary_field(field, east, north, bounds, *,
     """Apply the tangent-local boundary model and return edge diagnostics."""
     east = np.asarray(east, float)
     north = np.asarray(north, float)
-    base_e, base_n, weight, nearest = field.evaluate(east, north)
+    base_e, base_n, _, _ = field.evaluate(east, north)
     base_e = np.asarray(base_e, float)
     base_n = np.asarray(base_n, float)
     size = len(east)
     edge_distance = np.full(size, np.inf, float)
     applied = np.zeros(size, bool)
-    confidence = np.ones(size, float)
     if size == 0:
-        return base_e, base_n, edge_distance, applied, confidence
+        return base_e, base_n, edge_distance, applied
     fits = _fit_local(field, bounds)
     if not fits:
-        return base_e, base_n, edge_distance, applied, confidence
+        return base_e, base_n, edge_distance, applied
     side, inward = _geometry(east, north, bounds)
     edge_distance = inward
     tile_m = float(getattr(field, "tile_m", DEFAULT_BAND_M))
@@ -147,7 +144,7 @@ def evaluate_boundary_field(field, east, north, bounds, *,
     fit_taper_m = 4.0 * tile_m
     selected = (inward >= 0.0) & (inward < range_m)
     if not np.any(selected):
-        return base_e, base_n, edge_distance, applied, confidence
+        return base_e, base_n, edge_distance, applied
     tangent = east if size else east
     # top/bottom use east tangent; left/right use north. Evaluate per side so
     # each query selects the nearest local bin centre.
@@ -157,7 +154,6 @@ def evaluate_boundary_field(field, east, north, bounds, *,
             continue
         candidates = [fit for fit in fits if fit["side"] == index]
         if not candidates:
-            confidence[local] = 0.0
             continue
         centers = np.asarray([fit["center"] for fit in candidates])
         idx = np.flatnonzero(local)
@@ -167,7 +163,6 @@ def evaluate_boundary_field(field, east, north, bounds, *,
             fit = candidates[int(bin_index)]
             if abs(t[position] - fit["center"]) > (
                     bin_m / 2.0 + half_window_m):
-                confidence[local_index] = 0.0
                 continue
             feature = _features(
                 np.array([east[local_index]]), np.array([north[local_index]]),
@@ -181,7 +176,4 @@ def evaluate_boundary_field(field, east, north, bounds, *,
             base_e[local_index] += taper * correction[0]
             base_n[local_index] += taper * correction[1]
             applied[local_index] = True
-            confidence[local_index] = np.clip(
-                weight[local_index] / EDGE_CONFIDENCE_WEIGHT_REF, 0.0, 1.0)
-            confidence[local_index] *= min(1.0, fit["count"] / 6.0)
-    return base_e, base_n, edge_distance, applied, confidence
+    return base_e, base_n, edge_distance, applied

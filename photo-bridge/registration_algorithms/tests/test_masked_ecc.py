@@ -1,4 +1,4 @@
-"""Masked ECC, forward-backward consistency and covariance contracts."""
+"""Masked ECC, ambiguity and covariance contracts."""
 from __future__ import annotations
 
 import numpy as np
@@ -6,7 +6,9 @@ import pytest
 from rasterio.transform import from_origin
 
 from registration_algorithms.dsm_registration import _register_tile
-from registration_algorithms.masked_ecc import masked_ecc_candidates
+from registration_algorithms.masked_ecc import (
+    CANDIDATE_MODE_MASS_MIN, candidate_mode_quality, masked_ecc_candidates,
+)
 
 
 def _structured_pair(size=64, roll=(2, -3)):
@@ -29,6 +31,9 @@ def test_masked_ecc_recovers_known_roll():
     # World convention: dx = sx*r, dy = -sy*r.
     assert best["sx"] * 0.1 == pytest.approx(-0.3, abs=0.02)
     assert -best["sy"] * 0.1 == pytest.approx(-0.2, abs=0.02)
+    covariance = np.asarray(best["covariance_px"], float)
+    assert covariance.shape == (2, 2)
+    assert np.all(np.linalg.eigvalsh(covariance) > 0.0)
 
 
 def test_masked_ecc_excludes_nodata_hole():
@@ -68,20 +73,58 @@ def test_register_tile_records_observability_fields():
                             row=0, column=0, top=0, left=0)
     assert record is not None
     for key in ("cc_best", "cc_second", "margin", "separation_m", "period_m",
-                "reverse_cc", "fb_error_m", "consistent", "ambiguous",
-                "candidate_count", "uniqueness_observable",
-                "competing_separation_m",
+                "ambiguous", "candidate_count", "candidate_mode_count",
+                "candidate_top_mass", "candidate_second_mass",
+                "candidate_mode_separation_m", "candidate_ambiguity",
+                "uniqueness_observable", "competing_separation_m",
                 "sigma_e", "sigma_n", "sigma_en", "uniqueness"):
         assert key in record
+    for removed in ("reverse_cc", "fb_error_m", "consistent"):
+        assert removed not in record
     assert record["sigma_e"] > 0.0
     assert record["sigma_n"] > 0.0
-    assert np.isfinite(record["fb_error_m"])
-    assert record["consistent"] is True
     assert record["cc_best"] >= record["cc_second"]
     covariance = np.array([[record["sigma_e"] ** 2, record["sigma_en"]],
                            [record["sigma_en"], record["sigma_n"] ** 2]])
     assert np.all(np.linalg.eigvalsh(covariance) > 0.0)
 
+
+
+def test_candidate_mode_quality_merges_close_peaks():
+    quality = candidate_mode_quality(
+        [{"sx": 0.0, "sy": 0.0, "cc": 0.90},
+         {"sx": 0.5, "sy": 0.0, "cc": 0.89}], 0.1)
+    assert quality["mode_count"] == 1
+    assert quality["top_mass"] == pytest.approx(1.0)
+    assert quality["mode_separation_m"] == pytest.approx(0.0)
+
+
+def test_candidate_mode_quality_splits_far_peaks():
+    quality = candidate_mode_quality(
+        [{"sx": 0.0, "sy": 0.0, "cc": 0.90},
+         {"sx": 10.0, "sy": 0.0, "cc": 0.90}], 0.1)
+    assert quality["mode_count"] == 2
+    assert quality["top_mass"] == pytest.approx(0.5)
+    assert quality["second_mass"] == pytest.approx(0.5)
+    assert quality["mode_separation_m"] == pytest.approx(1.0, abs=1e-4)
+
+
+def test_candidate_mode_quality_dominant_peak_clears_mass_threshold():
+    quality = candidate_mode_quality(
+        [{"sx": 0.0, "sy": 0.0, "cc": 0.99},
+         {"sx": 10.0, "sy": 0.0, "cc": 0.90}], 0.1)
+    assert quality["mode_count"] == 2
+    assert quality["top_mass"] > CANDIDATE_MODE_MASS_MIN
+
+
+def test_peak_covariance_matches_synthetic_gaussian_peak():
+    from registration_algorithms.masked_ecc import _peak_covariance
+    y, x = np.mgrid[-6:7, -6:7]
+    surface = np.exp(-0.5 * (x * x / 4.0 + y * y / 9.0))
+    covariance = _peak_covariance(surface, 6, 6)
+    assert 0.5 * float(np.trace(covariance)) == pytest.approx(1.0, rel=0.05)
+    assert covariance[1, 1] / covariance[0, 0] == pytest.approx(9.0 / 4.0, rel=0.15)
+    assert abs(covariance[0, 1]) < 1e-6
 
 
 def test_fft_correlation_is_linear_not_circular():

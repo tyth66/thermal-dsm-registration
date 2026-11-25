@@ -1,4 +1,4 @@
-"""Regression tests for nodata highpass and ECC direction contracts."""
+"""Regression tests for DSM registration and ECC direction contracts."""
 from __future__ import annotations
 
 import numpy as np
@@ -7,8 +7,8 @@ import rasterio
 from rasterio.transform import from_origin
 
 from registration_algorithms.dsm_registration import (
-    DISPLACEMENT_BOUND_FLOOR_M, apply_displacement_domain, displacement_domain,
-    ecc, highpass, load_grid, pixel_shift_to_world, register,
+    apply_displacement_domain, displacement_domain,
+    ecc, load_grid, pixel_shift_to_world, register,
 )
 
 
@@ -30,21 +30,6 @@ def test_ecc_direction_for_known_thermal_roll():
     assert abs(dy - 0.6) < 0.2
 
 
-def test_highpass_does_not_fill_nodata_with_median_edge():
-    height, width = 80, 80
-    east = np.arange(width, dtype=np.float32)[None, :]
-    plane = np.repeat(east, height, axis=0) * 0.1
-    valid = np.ones((height, width), bool)
-    valid[25:55, 30:52] = False
-    high = highpass(plane, valid, sigma_px=3.0)
-    assert np.all(high[~valid] == 0.0)
-    # A smooth plane has no high-frequency signal away from the hole.
-    assert np.median(np.abs(high[5:20, 5:20])) < 1e-3
-    # The normalized filter must not create a sign-flipped median edge at the
-    # hole boundary.
-    assert np.max(np.abs(high)) < 1.5
-
-
 def test_register_tile_returns_every_finite_ecc_shift():
     from registration_algorithms.dsm_registration import _register_tile
     rng = np.random.default_rng(5)
@@ -64,8 +49,8 @@ def test_register_tile_returns_every_finite_ecc_shift():
                 "ncc_after", "valid_fraction", "quality_weight"):
         assert key in record
     assert record["quality_weight"] == pytest.approx(1.0)
-    for removed in ("candidates", "second_margin",
-                    "periodic_ambiguity", "unique"):
+    assert isinstance(record["candidates"], list)
+    for removed in ("second_margin", "periodic_ambiguity", "unique"):
         assert removed not in record
 
 
@@ -89,10 +74,10 @@ def _observation(dx, dy):
     return {"dx_m": float(dx), "dy_m": float(dy)}
 
 
-def test_displacement_domain_keeps_real_drift_above_floor_and_drops_alias():
-    # A station with ~3 m of real drift: the domain is estimated from the
+def test_displacement_domain_keeps_real_drift_and_drops_alias():
+    # A station with ~3 m of real drift: the 2-D mode is estimated from the
     # observations, so the true drift is preserved instead of being clipped by
-    # the fixed 1.5 m bound calibrated on the 141 station.
+    # a fixed bound calibrated on one station.
     offsets = [-0.5, -0.4, -0.3, -0.2, -0.1, 0.1, 0.2, 0.3, 0.4, 0.5] * 2
     dy_offsets = [0.0, 0.1, -0.1, 0.2, -0.2] * 4
     records = [_observation(3.0 + dx, 0.2 + dy)
@@ -103,25 +88,25 @@ def test_displacement_domain_keeps_real_drift_above_floor_and_drops_alias():
     domain = displacement_domain(records)
     kept, stats = apply_displacement_domain(records)
 
-    assert domain["center_dx"] == pytest.approx(3.0, abs=0.5)
-    assert domain["bound_dx"] == pytest.approx(DISPLACEMENT_BOUND_FLOOR_M)
-    assert domain["center_dy"] == pytest.approx(0.2, abs=0.1)
-    assert domain["bound_dy"] == pytest.approx(DISPLACEMENT_BOUND_FLOOR_M)
+    assert domain["center_dx_m"] == pytest.approx(3.0, abs=0.5)
+    assert domain["center_dy_m"] == pytest.approx(0.2, abs=0.1)
+    assert domain["estimator"] == "2d_kde_mean_shift"
+    assert domain["confidence"] == pytest.approx(0.995)
     kept_pairs = {(round(row["dx_m"], 6), round(row["dy_m"], 6)) for row in kept}
     assert (3.2, 0.1) in kept_pairs           # real 3.2 m observation survives
     assert (0.3, 17.67) not in kept_pairs     # alias is an invalid measurement
-    assert abs(17.67 - domain["center_dy"]) > domain["bound_dy"]
     assert stats["rejected"] == 1
 
 
-def test_displacement_domain_falls_back_to_floor_for_compact_station():
-    # MAD ~ 0 (uniform drift): the floor keeps the domain wide enough for the
-    # station's real spatial variation.
+def test_displacement_domain_keeps_ellipse_floor_for_compact_station():
+    # MAD ~ 0 (uniform drift): the covariance floor keeps the ellipse wide
+    # enough for the station's real spatial variation.
     records = [_observation(0.2, 0.1) for _ in range(20)]
     records.append(_observation(1.2, 0.1))    # true 1.2 m observation
     kept, stats = apply_displacement_domain(records)
-    assert stats["bound_dx"] == pytest.approx(DISPLACEMENT_BOUND_FLOOR_M)
-    assert stats["bound_dy"] == pytest.approx(DISPLACEMENT_BOUND_FLOOR_M)
+    assert stats["covariance_m2"][0][0] == pytest.approx(0.25)
+    assert stats["covariance_m2"][1][1] == pytest.approx(0.25)
+    assert min(stats["semiaxis_m"]) > 1.5
     kept_pairs = {(round(row["dx_m"], 6), round(row["dy_m"], 6)) for row in kept}
     assert (1.2, 0.1) in kept_pairs
     assert stats["rejected"] == 0
@@ -137,8 +122,8 @@ def test_nan_displacement_is_rejected_without_poisoning_the_domain():
     domain = displacement_domain(records)
     kept, stats = apply_displacement_domain(records)
 
-    assert np.isfinite(domain["center_dx"])
-    assert np.isfinite(domain["center_dy"])
+    assert np.isfinite(domain["center_dx_m"])
+    assert np.isfinite(domain["center_dy_m"])
     assert len(kept) == 4
     assert stats["rejected"] == 1
     assert all(np.isfinite(row["dx_m"]) and np.isfinite(row["dy_m"])
@@ -221,8 +206,8 @@ def test_mode_domain_rejects_large_alias_cluster():
     records += [_observation(-5.0, 0.1) for _ in range(5)]
     domain = displacement_domain(records)
     kept, stats = apply_displacement_domain(records)
-    assert domain["center_dx"] == pytest.approx(0.2, abs=0.1)
-    assert domain["bound_dx"] == pytest.approx(DISPLACEMENT_BOUND_FLOOR_M)
+    assert domain["center_dx_m"] == pytest.approx(0.2, abs=0.1)
+    assert domain["estimator"] == "2d_kde_mean_shift"
     kept_pairs = {(round(row["dx_m"], 6), round(row["dy_m"], 6)) for row in kept}
     assert (0.2, 0.1) in kept_pairs
     assert (5.0, 0.1) not in kept_pairs

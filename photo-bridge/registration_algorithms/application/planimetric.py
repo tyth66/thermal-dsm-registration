@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from ..dsm_registration import highpass, load_grid, register
+from ..dsm_registration import load_grid, register
 from ..residual_model import fit_regularized_field
 from ..vertical_estimation import component_shifts
 
@@ -37,7 +37,6 @@ class PlanimetricInputs:
     resolution_m: float = 0.1
     tile_m: float = 40.0
     step_m: float = 20.0
-    highpass_sigma_m: float = 0.0
     prior_radius_m: float = 2.0
     field_max_distance_m: float = 30.0
     warp_threads: int = 8
@@ -47,8 +46,7 @@ class PlanimetricInputs:
 
 
 PLANIMETRIC_SCALE_PARAMETERS = ("resolution_m", "tile_m", "step_m",
-                                "highpass_sigma_m", "prior_radius_m",
-                                "field_max_distance_m")
+                                "prior_radius_m", "field_max_distance_m")
 
 
 def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
@@ -59,8 +57,6 @@ def validate_planimetric_inputs(inputs: PlanimetricInputs) -> None:
     """
     for name in PLANIMETRIC_SCALE_PARAMETERS:
         value = getattr(inputs, name)
-        if name == "highpass_sigma_m" and value == 0.0:
-            continue
         if not value > 0:
             raise ValueError("%s must be positive" % name)
 
@@ -96,7 +92,6 @@ class PlanimetricResult:
     tiling: TilingPlan
     field_support: FieldSupportPlan
     attempts: tuple[dict, ...]
-    highpass_sigma_m: float | None = None
 
 
 def adaptive_field_support(overlap_width_m: float,
@@ -171,27 +166,20 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
     plan = adaptive_tiling(overlap_width_m, overlap_height_m, resolution,
                            inputs.tile_m, inputs.step_m)
     maximum_attempts = MAXIMUM_TILING_ATTEMPTS
-    highpass_sigma_m = float(inputs.highpass_sigma_m)
-    if highpass_sigma_m > 0.0:
-        sigma_px = highpass_sigma_m / resolution
-        visible_high = highpass(visible_z, visible_valid, sigma_px)
-        thermal_high = highpass(thermal_z, thermal_valid, sigma_px)
-    else:
-        visible_high = np.where(visible_valid, visible_z, 0.0).astype(np.float32)
-        thermal_high = np.where(thermal_valid, thermal_z, 0.0).astype(np.float32)
+    visible_values = np.where(visible_valid, visible_z, 0.0).astype(np.float32)
+    thermal_values = np.where(thermal_valid, thermal_z, 0.0).astype(np.float32)
 
     attempts: list[dict] = []
     best = None
     tile_m, step_m = plan.tile_m, plan.step_m
     for attempt in range(1, maximum_attempts + 1):
         records, displacement = register(
-            visible_high, thermal_high, joint, transform, resolution,
+            visible_values, thermal_values, joint, transform, resolution,
             tile_m, step_m, inputs.ecc_workers,
             prior_radius_m=inputs.prior_radius_m,
             include_boundary=True)
         accepted_raw = [record for record in records
-                        if record.get("consistent", True)
-                        and not record.get("ambiguous", False)]
+                        if not record.get("ambiguous", False)]
         attempts.append({
             "attempt": attempt, "tile_m": tile_m, "step_m": step_m,
             "tile_px": int(round(tile_m / resolution)),
@@ -199,12 +187,12 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
             "records": len(records), "accepted": len(accepted_raw),
             "ambiguous": sum(bool(record.get("ambiguous", False))
                              for record in records),
-            "inconsistent": sum(not record.get("consistent", True)
-                                for record in records),
             "invalid_displacements": displacement["rejected"],
             "displacement_domain_m": {
                 key: displacement[key]
-                for key in ("center_dx", "bound_dx", "center_dy", "bound_dy")},
+                for key in ("center_dx_m", "center_dy_m", "covariance_m2",
+                            "semiaxis_m", "radius", "confidence",
+                            "estimator")},
         })
         if best is None or len(accepted_raw) > len(best[0]):
             best = (accepted_raw, records, tile_m, step_m)
@@ -215,7 +203,7 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
 
     if best is None or not best[0]:
         raise ValueError(
-            "no usable DSM tiles after consistency/ambiguity filtering; "
+            "no usable DSM tiles after ambiguity filtering; "
             "overlap=({:.1f} x {:.1f} m), tile=({:.2f}..{:.2f} m), "
             "attempts={}".format(
                 overlap_width_m, overlap_height_m, plan.tile_m, tile_m, attempts))
@@ -244,4 +232,4 @@ def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
             overlap_height_m=overlap_height_m,
             requested_tile_m=plan.requested_tile_m,
             requested_step_m=plan.requested_step_m),
-        attempts=tuple(attempts), highpass_sigma_m=float(highpass_sigma_m))
+        attempts=tuple(attempts))

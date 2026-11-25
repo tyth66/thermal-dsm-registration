@@ -42,7 +42,6 @@ def main(argv=None) -> int:
                         help="requested maximum tile size; adaptive tiling may shrink it")
     parser.add_argument("--step-m", type=float, default=20.0,
                         help="requested maximum step; capped at tile/2")
-    parser.add_argument("--highpass-sigma-m", type=float, default=1.5)
     parser.add_argument("--field-max-distance-m", type=float, default=30.0)
     parser.add_argument("--regularized-kernel-m", type=float, default=None)
     parser.add_argument("--regularized-ridge", type=float, default=0.1)
@@ -66,7 +65,6 @@ def main(argv=None) -> int:
         resolution_m=resolution,
         tile_m=args.tile_m,
         step_m=args.step_m,
-        highpass_sigma_m=args.highpass_sigma_m,
         field_max_distance_m=args.field_max_distance_m,
         warp_threads=args.warp_threads,
         ecc_workers=args.ecc_workers,
@@ -91,7 +89,7 @@ def main(argv=None) -> int:
     write_csv(out_dir / "component_residuals_3d.csv", components)
     similarity = field.to_model()["similarity"]
     summary = {
-        "method": "multi-scale ECC high-pass DSM registration + robust global "
+        "method": "multi-scale ECC DSM registration + robust global "
                   "similarity + regularized RBF residual field",
         "grid_shape": list(joint), "resolution_m": resolution,
         "warp_threads": args.warp_threads, "ecc_workers": args.ecc_workers,
@@ -109,7 +107,7 @@ def main(argv=None) -> int:
             "requested_field_max_distance_m": estimation.field_support.requested_max_distance_m,
         },
         "field_max_distance_m": estimation.field_support.max_distance_m,
-        "highpass_sigma_m": args.highpass_sigma_m,
+        "rbf_weighting": "covariance_gls",
         "tiles": len(records), "accepted_tiles": len(accepted) + outliers,
         "outlier_tiles": outliers,
         "used_tiles": len(accepted),

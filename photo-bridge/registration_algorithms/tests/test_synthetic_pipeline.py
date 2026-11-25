@@ -26,8 +26,8 @@ def test_synthetic_pipeline_recovers_known_shift():
         visible, thermal, joint, transform, 0.1, 4.0, 2.0,
         workers=1)
     assert len(records) >= 10
-    assert domain["center_dx"] == pytest.approx(-0.30, abs=0.02)
-    assert domain["center_dy"] == pytest.approx(-0.20, abs=0.02)
+    assert domain["center_dx_m"] == pytest.approx(-0.30, abs=0.02)
+    assert domain["center_dy_m"] == pytest.approx(-0.20, abs=0.02)
     field = fit_regularized_field(records, tile_m=4.0, max_distance_m=30.0,
                                   kernel_length_m=None, ridge=0.1)
     east = np.asarray([record["east"] for record in records])

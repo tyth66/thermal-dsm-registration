@@ -28,8 +28,8 @@ class PlanimetricField:
     def from_tiles(cls, rows, max_distance_m: float = 30.0):
         """Fit a field from tile rows by delegating to fit_regularized_field.
 
-        Empty rows produce the empty field: identity similarity with no
-        residual support.
+        Every row must carry sigma_e, sigma_n and sigma_en.  Empty rows produce
+        the empty field: identity similarity with no residual support.
         """
         rows = list(rows)
         if not rows:
@@ -83,16 +83,21 @@ def _coverage_weight_scale(centers: np.ndarray, tile_m: float) -> np.ndarray:
                 counts[left:right, bottom:top])))
     return scales
 
-def _weighted_similarity(east: np.ndarray, north: np.ndarray,
-                         target_east: np.ndarray, target_north: np.ndarray,
-                         weights: np.ndarray):
-    """Robust weighted similarity: target = A * source + b."""
-    source = np.column_stack([east, north])
-    target = np.column_stack([target_east, target_north])
+def _weighted_displacement_similarity(east: np.ndarray, north: np.ndarray,
+                                      delta_e: np.ndarray, delta_n: np.ndarray,
+                                      weights: np.ndarray, center: np.ndarray):
+    """Robust weighted similarity in centered displacement coordinates.
+
+    The model is d = B (p - center) + t0, with B = A - I constrained to
+    [[u, -v], [v, u]].  Centering keeps the large projected coordinates out of
+    the rotation/translation coupling.
+    """
+    source = np.column_stack([east, north]) - np.asarray(center, float)
+    target = np.column_stack([delta_e, delta_n])
     weights = np.asarray(weights, float)
     weights = np.where(np.isfinite(weights) & (weights > 0), weights, 1.0)
     mask = np.ones(len(source), bool)
-    matrix = np.eye(2)
+    gradient = np.zeros((2, 2))
     translation = np.zeros(2)
     for _ in range(4):
         if mask.sum() < 3:
@@ -109,11 +114,11 @@ def _weighted_similarity(east: np.ndarray, north: np.ndarray,
         design[1::2, 0] = centered[:, 1]
         design[1::2, 1] = centered[:, 0]
         root_weight = np.repeat(np.sqrt(w), 2)
-        a, b = np.linalg.lstsq(design * root_weight[:, None],
+        u, v = np.linalg.lstsq(design * root_weight[:, None],
                                rhs * root_weight, rcond=None)[0]
-        matrix = np.array([[a, -b], [b, a]])
-        translation = target_center - matrix @ source_center
-        residual = target - (source @ matrix.T + translation)
+        gradient = np.array([[u, -v], [v, u]])
+        translation = target_center - gradient @ source_center
+        residual = target - (source @ gradient.T + translation)
         magnitude = np.hypot(residual[:, 0], residual[:, 1])
         median = float(np.median(magnitude[mask]))
         mad = 1.4826 * float(np.median(np.abs(magnitude[mask] - median)))
@@ -124,7 +129,37 @@ def _weighted_similarity(east: np.ndarray, north: np.ndarray,
         if np.array_equal(next_mask, mask):
             break
         mask = next_mask
-    return matrix, translation, mask
+    return gradient, translation, mask
+
+
+def _observation_precision(rows):
+    """Return normalized inverse ECC covariances as (a, b, d).
+
+    Each row must carry sigma_e, sigma_n and sigma_en.  For every row,
+    Sigma^-1 = [[a, b], [b, d]].  The precision is normalized by the median
+    average precision so the ridge scale remains meaningful across stations;
+    a common scaling of all covariances is absorbed by that normalization.
+    """
+    try:
+        sigma_e = np.asarray([float(row["sigma_e"]) for row in rows], float)
+        sigma_n = np.asarray([float(row["sigma_n"]) for row in rows], float)
+        sigma_en = np.asarray([float(row["sigma_en"]) for row in rows], float)
+    except KeyError as exc:
+        raise ValueError(
+            "covariance RBF weighting requires sigma_e/sigma_n/sigma_en "
+            "on every accepted row") from exc
+    variance_e = sigma_e ** 2
+    variance_n = sigma_n ** 2
+    determinant = variance_e * variance_n - sigma_en ** 2
+    if not np.all(np.isfinite(determinant)) or np.any(determinant <= 0.0):
+        raise ValueError("observation covariance must be positive definite")
+    a = variance_n / determinant
+    b = -sigma_en / determinant
+    d = variance_e / determinant
+    scale = float(np.median(0.5 * (a + d)))
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("observation covariance precision scale must be positive")
+    return a / scale, b / scale, d / scale
 
 
 def fit_regularized_field(rows: Iterable[dict], tile_m: float,
@@ -132,18 +167,21 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
                           kernel_length_m: float | None = None,
                           ridge: float = 0.1,
                           normalize_coverage: bool = True):
-    """Fit global similarity + regularized RBF residual.
+    """Fit global similarity + covariance-weighted RBF residual.
 
-    The residual model decays to zero outside the tile support, so weak-support
-    areas fall back to the global similarity instead of extrapolating IDW noise.
+    The RBF residual is fitted by generalized least squares using each tile's
+    2x2 ECC covariance, so east/north precision and their correlation are
+    respected.  Every accepted row must carry sigma_e, sigma_n and sigma_en;
+    there is no scalar-weight fallback.
     """
     rows = list(rows)
     if not rows:
         raise ValueError("cannot fit a planimetric field without accepted tiles")
     east = np.asarray([float(row["east"]) for row in rows], float)
     north = np.asarray([float(row["north"]) for row in rows], float)
-    target_east = east + np.asarray([float(row["dx_m"]) for row in rows], float)
-    target_north = north + np.asarray([float(row["dy_m"]) for row in rows], float)
+    delta_e = np.asarray([float(row["dx_m"]) for row in rows], float)
+    delta_n = np.asarray([float(row["dy_m"]) for row in rows], float)
+    center = np.array([float(np.mean(east)), float(np.mean(north))])
     cc = np.asarray([float(row["cc"]) for row in rows], float)
     # A non-finite or non-positive correlation is the least trustworthy
     # observation, not the most: floor it at the minimum weight instead of
@@ -170,28 +208,40 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
         np.column_stack([east, north]), k=2)[0][:, 1]
         / max(spacing_median, 1e-6)) - 1.0) ** 2)
     weights = cc * np.where(np.isfinite(support), support, 1.0)
-    matrix, translation, inliers = _weighted_similarity(
-        east, north, target_east, target_north, weights)
-    target = np.column_stack([target_east, target_north])
-    aligned = np.column_stack([east, north]) @ matrix.T + translation
-    residual = target - aligned
+    gradient, translation, inliers = _weighted_displacement_similarity(
+        east, north, delta_e, delta_n, weights, center)
     centers = np.column_stack([east, north])
+    centered = centers - center
+    residual = np.column_stack([delta_e, delta_n]) - (
+        centered @ gradient.T + translation)
     fit_weights = weights * np.where(inliers, 1.0, 0.2)
     fit_residual = residual
     distances = np.hypot(centers[:, None, 0] - centers[None, :, 0],
                          centers[:, None, 1] - centers[None, :, 1])
     kernel = np.exp(-0.5 * (distances / kernel_length_m) ** 2)
-    weighted_kernel = kernel * fit_weights[:, None]
-    normal = kernel.T @ weighted_kernel + float(ridge) * np.eye(len(centers))
-    rhs = weighted_kernel.T @ fit_residual
-    coefficients = np.linalg.solve(normal, rhs)
+    a, b, d = _observation_precision(rows)
+    a = a * fit_weights
+    b = b * fit_weights
+    d = d * fit_weights
+    identity = np.eye(len(centers))
+    m_ee = kernel.T @ (a[:, None] * kernel) + float(ridge) * identity
+    m_en = kernel.T @ (b[:, None] * kernel)
+    m_nn = kernel.T @ (d[:, None] * kernel) + float(ridge) * identity
+    rhs_e = kernel.T @ (a * fit_residual[:, 0] + b * fit_residual[:, 1])
+    rhs_n = kernel.T @ (b * fit_residual[:, 0] + d * fit_residual[:, 1])
+    solution = np.linalg.solve(
+        np.block([[m_ee, m_en], [m_en, m_nn]]),
+        np.concatenate([rhs_e, rhs_n]))
+    coefficients = np.column_stack([solution[:len(centers)],
+                                    solution[len(centers):]])
     tiles = [{
         "east": float(east[i]), "north": float(north[i]), "cc": float(cc_raw[i]),
         "residual_e": float(residual[i, 0]), "residual_n": float(residual[i, 1]),
     } for i in range(len(rows))]
     return RegularizedPlanimetricField(
         tiles=tiles, centers=centers, weights=fit_weights,
-        coefficients=coefficients, matrix=matrix, translation=translation,
+        coefficients=coefficients, displacement_gradient=gradient,
+        translation=translation, center=center,
         kernel_length_m=kernel_length_m, ridge=float(ridge),
         max_distance_m=float(max_distance_m), tile_m=float(tile_m))
 
@@ -201,8 +251,9 @@ class RegularizedPlanimetricField(PlanimetricField):
 
     EVALUATION_CHUNK = 250_000
 
-    def __init__(self, tiles, centers, weights, coefficients, matrix,
-                 translation, kernel_length_m, ridge, max_distance_m,
+    def __init__(self, tiles, centers, weights, coefficients,
+                 displacement_gradient, translation, center,
+                 kernel_length_m, ridge, max_distance_m,
                  tile_m: float | None = None):
         self.tiles = list(tiles)
         self.east = np.asarray([tile["east"] for tile in self.tiles], float)
@@ -213,7 +264,8 @@ class RegularizedPlanimetricField(PlanimetricField):
         self.centers = np.asarray(centers, float)
         self.weights = np.asarray(weights, float)
         self.coefficients = np.asarray(coefficients, float)
-        self.matrix = np.asarray(matrix, float)
+        self.center = np.asarray(center, float)
+        self.displacement_gradient = np.asarray(displacement_gradient, float)
         self.translation = np.asarray(translation, float)
         self.kernel_length_m = float(kernel_length_m)
         self.ridge = float(ridge)
@@ -221,17 +273,45 @@ class RegularizedPlanimetricField(PlanimetricField):
         self.tile_m = float(tile_m) if tile_m else self.kernel_length_m / 2.5
         self.tree = cKDTree(np.column_stack([self.east, self.north])) if len(self.east) else None
 
+    @property
+    def matrix(self):
+        """Absolute similarity mapping A = I + B (compatibility view)."""
+        return np.eye(2) + self.displacement_gradient
+
+    @property
+    def absolute_translation(self):
+        """Absolute mapping translation t_abs = t0 - B p_c."""
+        return self.translation - self.displacement_gradient @ self.center
+
     @classmethod
     def empty(cls, max_distance_m: float = 30.0):
         return cls(tiles=[], centers=np.empty((0, 2)), weights=np.empty(0),
-                   coefficients=np.empty((0, 2)), matrix=np.eye(2),
-                   translation=np.zeros(2), kernel_length_m=1.0,
-                   ridge=0.1, max_distance_m=max_distance_m, tile_m=1.0)
+                   coefficients=np.empty((0, 2)),
+                   displacement_gradient=np.zeros((2, 2)),
+                   translation=np.zeros(2), center=np.zeros(2),
+                   kernel_length_m=1.0, ridge=0.1,
+                   max_distance_m=max_distance_m, tile_m=1.0)
 
     @classmethod
     def from_model(cls, model: dict):
         residual = model["residual"]
         similarity = model["similarity"]
+        absolute = np.asarray(similarity["matrix"], float)
+        absolute_translation = np.asarray(similarity["translation"], float)
+        if "center" in similarity:
+            center = np.asarray(similarity["center"], float)
+            gradient = np.asarray(
+                similarity.get("displacement_gradient", absolute - np.eye(2)),
+                float)
+            translation = np.asarray(
+                similarity.get("centered_translation",
+                               absolute_translation + gradient @ center), float)
+        else:
+            # v1 compatibility: the old model used absolute A and t_abs with
+            # no reference centre, which is the p_c=0 case.
+            center = np.zeros(2)
+            gradient = absolute - np.eye(2)
+            translation = absolute_translation
         return cls(
             tiles=residual["tiles"],
             centers=np.asarray(residual["centers"], float),
@@ -239,8 +319,9 @@ class RegularizedPlanimetricField(PlanimetricField):
             coefficients=np.column_stack([
                 np.asarray(residual["coefficients_e"], float),
                 np.asarray(residual["coefficients_n"], float)]),
-            matrix=np.asarray(similarity["matrix"], float),
-            translation=np.asarray(similarity["translation"], float),
+            displacement_gradient=gradient,
+            translation=translation,
+            center=center,
             kernel_length_m=float(residual["kernel_length_m"]),
             ridge=float(residual["ridge"]),
             max_distance_m=float(model.get("max_distance_m", 30.0)),
@@ -253,9 +334,12 @@ class RegularizedPlanimetricField(PlanimetricField):
             "type": REGULARIZED_FIELD_TYPE,
             "similarity": {
                 "matrix": self.matrix.tolist(),
-                "translation": self.translation.tolist(),
+                "translation": self.absolute_translation.tolist(),
                 "rotation_deg": rotation,
                 "scale": scale,
+                "center": self.center.tolist(),
+                "displacement_gradient": self.displacement_gradient.tolist(),
+                "centered_translation": self.translation.tolist(),
             },
             "residual": {
                 "kernel_length_m": self.kernel_length_m,
@@ -281,13 +365,14 @@ class RegularizedPlanimetricField(PlanimetricField):
         return self._kernel(east, north) @ self.coefficients
 
     def jacobian(self, east, north):
-        """Return J_f(p), det(J), sigma_min, sigma_max for each query point."""
+        """Return the mapping Jacobian J_T, det, and singular values."""
         points = np.column_stack([np.asarray(east, float), np.asarray(north, float)])
         kernel = self._kernel(east, north)
         offsets = points[:, None, :] - self.centers[None, :, :]
         correction = (1.0 / (self.kernel_length_m ** 2)) * np.einsum(
             "nm,ma,nmb->nab", kernel, self.coefficients, offsets)
-        jacobian = self.matrix[None, :, :] - correction
+        jacobian = (np.eye(2)[None, :, :]
+                    + self.displacement_gradient[None, :, :] - correction)
         determinant = np.linalg.det(jacobian)
         singular = np.linalg.svd(jacobian, compute_uv=False)
         return {
@@ -368,7 +453,8 @@ class RegularizedPlanimetricField(PlanimetricField):
 
     def _evaluate_chunk(self, east, north):
         points = np.column_stack([np.asarray(east, float), np.asarray(north, float)])
-        aligned = points @ self.matrix.T + self.translation
+        centered = points - self.center
+        displacement = centered @ self.displacement_gradient.T + self.translation
         residual = np.zeros_like(points)
         density = np.zeros(len(points), float)
         if len(self.centers):
@@ -377,7 +463,7 @@ class RegularizedPlanimetricField(PlanimetricField):
             kernel = np.exp(-0.5 * squared / (self.kernel_length_m ** 2))
             residual = kernel @ self.coefficients
             density = kernel.sum(axis=1) / max(len(self.centers), 1)
-        delta = aligned - points + residual
+        delta = displacement + residual
         return delta[:, 0], delta[:, 1], density
 
 

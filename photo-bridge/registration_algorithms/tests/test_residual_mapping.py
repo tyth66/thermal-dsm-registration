@@ -16,7 +16,8 @@ def _zero_field() -> PlanimetricField:
     for east in np.linspace(0.0, 90.0, 10):
         for north in np.linspace(0.0, 90.0, 10):
             rows.append({"east": float(east), "north": float(north),
-                         "cc": 1.0, "dx_m": 0.0, "dy_m": 0.0})
+                         "cc": 1.0, "dx_m": 0.0, "dy_m": 0.0,
+                         "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0})
     return PlanimetricField.from_tiles(rows, max_distance_m=1000.0)
 
 
@@ -62,11 +63,14 @@ def test_nonfinite_and_zero_cc_get_minimum_fit_weight():
     for east in np.linspace(0.0, 90.0, 10):
         for north in np.linspace(0.0, 90.0, 10):
             rows.append({"east": float(east), "north": float(north),
-                         "cc": 1.0, "dx_m": 0.0, "dy_m": 0.0})
+                         "cc": 1.0, "dx_m": 0.0, "dy_m": 0.0,
+                         "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0})
     rows.append({"east": 45.0, "north": 45.0, "cc": 0.0,
-                 "dx_m": 0.0, "dy_m": 0.0})
+                 "dx_m": 0.0, "dy_m": 0.0,
+                 "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0})
     rows.append({"east": 45.0, "north": 45.0, "cc": np.nan,
-                 "dx_m": 0.0, "dy_m": 0.0})
+                 "dx_m": 0.0, "dy_m": 0.0,
+                 "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0})
 
     field = fit_regularized_field(rows, tile_m=10.0, max_distance_m=1000.0)
 
@@ -86,6 +90,7 @@ def test_panel_points_identity_mapping(transforms):
                         alpha, field_max_distance=1000.0)
     assert len(rows) == 20
     assert all(row["valid"] for row in rows)
+    assert all("edge_confidence" not in row for row in rows)
     for row in rows:
         expected_u = (row["east_visible"] - 5.0) / 0.2
         expected_v = (205.0 - row["north_visible"]) / 0.2
@@ -117,6 +122,7 @@ def test_grid_mapping_shape_and_identity(transforms):
                           thermal, 1000, 1000, alpha, 20, 1000.0)
     assert result["grid_height"] == 100
     assert result["grid_width"] == 100
+    assert "edge_confidence" not in result
     assert result["east"].shape == (10000,)
     assert result["valid"].all()
     assert result["panel_mask"].shape == (10000,)

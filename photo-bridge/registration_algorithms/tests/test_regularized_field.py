@@ -25,6 +25,7 @@ def _rows():
                 "east": float(east), "north": float(north), "cc": 0.9,
                 "dx_m": float(target[0] - east),
                 "dy_m": float(target[1] - north),
+                "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0,
             })
     return rows, matrix, translation
 
@@ -42,6 +43,30 @@ def test_regularized_field_recovers_similarity_and_roundtrips():
     after = restored.evaluate(east, north)
     np.testing.assert_allclose(before[0], after[0], atol=1e-9)
     np.testing.assert_allclose(before[1], after[1], atol=1e-9)
+
+
+def test_centered_displacement_parameterization_roundtrips():
+    rows, matrix, translation = _rows()
+    field = fit_regularized_field(
+        rows, tile_m=10.0, max_distance_m=100.0,
+        kernel_length_m=20.0, ridge=1e-6)
+    center = np.array([np.mean([row["east"] for row in rows]),
+                       np.mean([row["north"] for row in rows])])
+    np.testing.assert_allclose(field.center, center, atol=1e-9)
+    np.testing.assert_allclose(field.displacement_gradient,
+                               matrix - np.eye(2), atol=1e-4)
+    np.testing.assert_allclose(field.absolute_translation, translation,
+                               atol=2e-3)
+    np.testing.assert_allclose(field.translation,
+                               translation + (matrix - np.eye(2)) @ center,
+                               atol=2e-3)
+    similarity = field.to_model()["similarity"]
+    for key in ("center", "displacement_gradient", "centered_translation"):
+        assert key in similarity
+    restored = PlanimetricField.from_model(field.to_model())
+    np.testing.assert_allclose(restored.center, field.center, atol=1e-9)
+    np.testing.assert_allclose(restored.displacement_gradient,
+                               field.displacement_gradient, atol=1e-12)
 
 
 def test_regularized_residual_does_not_extrapolate_to_unbounded_shift():

@@ -13,7 +13,6 @@ from typing import Any, Mapping
 import numpy as np
 import rasterio
 
-from ..boundary_field import EDGE_CONFIDENCE_MIN
 from ..forward_mapping import grid_mapping, panel_points
 from ..io_utils import stats
 from ..residual_model import PlanimetricField
@@ -78,9 +77,6 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         if len(rows) == 5 and not any(row["naive_valid"] for row in rows)
     }
     edge_rows = [row for row in panel_rows if row["edge_distance_m"] < 40.0]
-    edge_low_rows = [row for row in edge_rows
-                     if row["edge_confidence"] < EDGE_CONFIDENCE_MIN]
-    edge_low_panel_ids = {row["panel_id"] for row in edge_low_rows}
     valid_grid = grid["valid"]
     panel_mask = grid["panel_mask"]
     grid_size = len(grid["east"])
@@ -104,11 +100,7 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         "panel_ids_incomplete": sum(len(rows) != 5 for rows in panel_grouped.values()),
         "edge_band_m": 2.0 * float(getattr(field, "tile_m", 20.0)),
         "edge_tail_points": int(sum(row["edge_tail_applied"] for row in edge_rows)),
-        "edge_low_confidence_points": len(edge_low_rows),
-        "edge_low_confidence_panels": len(edge_low_panel_ids),
         "grid_edge_tail_points": int(np.count_nonzero(grid.get("edge_tail_applied", []))),
-        "grid_edge_low_confidence_points": int(np.count_nonzero(
-            np.asarray(grid.get("edge_confidence", np.ones(0))) < EDGE_CONFIDENCE_MIN)),
         "field_max_distance_m": (field.max_distance_m if inputs.field_max_distance_m is None
                                  else inputs.field_max_distance_m),
         "mapping_policy": MAPPING_POLICY,

@@ -12,14 +12,18 @@ integer-shift surface costs six FFTs per tile.
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import maximum_filter
+from scipy.ndimage import maximum_filter, shift as ndi_shift
 
 DEFAULT_TOP_K = 5
 DEFAULT_NMS_PX = 2
-AMBIGUITY_MARGIN = 0.02
-FB_TOLERANCE_M = 0.20
 SIGMA0_M = 0.05
 SOFTMAX_BETA = 50.0
+PEAK_COVARIANCE_SCALE_PX2 = 1.0
+PEAK_COVARIANCE_RATIO_MIN = 0.05
+PEAK_COVARIANCE_RATIO_MAX = 10.0
+DSM_COVARIANCE_MIN_PX2 = 1e-4
+DSM_COVARIANCE_MAX_PX2 = 100.0
+DSM_MIN_OVERLAP_PX = 50
 
 
 def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -41,7 +45,7 @@ def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
                        joint: np.ndarray, max_shift_px: int | None = None):
     """Return integer shifts, ECC and common-mask area for one tile.
 
-    visible/thermal are high-pass arrays; joint is the boolean common mask.
+    visible/thermal are masked DSM arrays; joint is the boolean common mask.
     Invalid pixels are excluded by the mask, not filled with zero.
     """
     visible = np.asarray(visible, float)
@@ -98,6 +102,43 @@ def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
     return shifts, ecc, m
 
 
+def _peak_curvature(ecc: np.ndarray, iy: int, ix: int):
+    """Positive-definite Q = -Hessian(rho) at an interior peak, or None."""
+    if not (0 < iy < ecc.shape[0] - 1 and 0 < ix < ecc.shape[1] - 1):
+        return None
+    center = float(ecc[iy, ix])
+    hxx = float(ecc[iy, ix - 1]) - 2.0 * center + float(ecc[iy, ix + 1])
+    hyy = float(ecc[iy - 1, ix]) - 2.0 * center + float(ecc[iy + 1, ix])
+    hxy = 0.25 * (float(ecc[iy + 1, ix + 1])
+                  - float(ecc[iy + 1, ix - 1])
+                  - float(ecc[iy - 1, ix + 1])
+                  + float(ecc[iy - 1, ix - 1]))
+    precision = -np.array([[hxx, hxy], [hxy, hyy]], float)
+    precision = 0.5 * (precision + precision.T)
+    eigenvalue = np.linalg.eigvalsh(precision)
+    if not np.all(np.isfinite(eigenvalue)) or np.any(eigenvalue <= 1e-9):
+        return None
+    return precision
+
+
+def _peak_covariance(ecc: np.ndarray, iy: int, ix: int) -> np.ndarray:
+    """Normalized inverse-Hessian covariance in px^2 (engineering fallback)."""
+    precision = _peak_curvature(ecc, iy, ix)
+    if precision is None:
+        return np.eye(2)
+    covariance = np.linalg.inv(precision)
+    covariance = 0.5 * (covariance + covariance.T)
+    mean_variance = 0.5 * float(np.trace(covariance))
+    if not np.isfinite(mean_variance) or mean_variance <= 0:
+        return PEAK_COVARIANCE_SCALE_PX2 * np.eye(2)
+    covariance = covariance * (PEAK_COVARIANCE_SCALE_PX2 / mean_variance)
+    eigenvalue, eigenvector = np.linalg.eigh(covariance)
+    eigenvalue = np.clip(eigenvalue,
+                         PEAK_COVARIANCE_SCALE_PX2 * PEAK_COVARIANCE_RATIO_MIN,
+                         PEAK_COVARIANCE_SCALE_PX2 * PEAK_COVARIANCE_RATIO_MAX)
+    return eigenvector @ np.diag(eigenvalue) @ eigenvector.T
+
+
 def _subpixel(ecc: np.ndarray, iy: int, ix: int) -> tuple[float, float]:
     """Parabolic subpixel offset around a sampled peak, clamped to +/-0.5 px."""
     if not (0 < iy < ecc.shape[0] - 1 and 0 < ix < ecc.shape[1] - 1):
@@ -114,16 +155,88 @@ def _subpixel(ecc: np.ndarray, iy: int, ix: int) -> tuple[float, float]:
     return float(np.clip(dx, -0.5, 0.5)), float(np.clip(dy, -0.5, 0.5))
 
 
+def _dsm_regression(visible, thermal, joint, sx, sy):
+    """Fit z_v(x)=alpha*z_t(x+s)+b over the shifted common mask."""
+    shifted = ndi_shift(np.asarray(thermal, float),
+                         shift=(-float(sy), -float(sx)), order=1,
+                         mode="constant", cval=np.nan, prefilter=False)
+    valid = (np.asarray(joint, bool) & np.isfinite(shifted)
+             & np.isfinite(visible))
+    count = int(valid.sum())
+    if count < DSM_MIN_OVERLAP_PX:
+        return None
+    v = np.asarray(visible, float)[valid]
+    t = shifted[valid]
+    t_centered = t - t.mean()
+    v_centered = v - v.mean()
+    denominator = float(np.sum(t_centered ** 2))
+    if denominator <= 1e-12:
+        return None
+    alpha = float(np.sum(t_centered * v_centered) / denominator)
+    residual = v_centered - alpha * t_centered
+    sse = float(np.sum(residual ** 2))
+    sst = float(np.sum(v_centered ** 2))
+    sigma_z2 = sse / max(count - 2, 1)
+    if not np.isfinite(sigma_z2) or sigma_z2 <= 0.0 or sst <= 0.0:
+        return None
+    return count, sst, sigma_z2, alpha
+
+
+def _dsm_candidate_covariance(visible, thermal, joint, sx, sy, ecc, iy, ix):
+    """DSM-profile covariance C=(beta_eff Q)^-1 for one candidate."""
+    fallback = _peak_covariance(ecc, iy, ix)
+    curvature = _peak_curvature(ecc, iy, ix)
+    result = {
+        "covariance_px": fallback,
+        "beta_eff": None,
+        "sst": None,
+        "sigma_z2": None,
+        "covariance_source": "fallback",
+    }
+    if curvature is None:
+        return result
+    regression = _dsm_regression(visible, thermal, joint, sx, sy)
+    if regression is None:
+        return result
+    count, sst, sigma_z2, _ = regression
+    rho = float(ecc[iy, ix])
+    if not np.isfinite(rho) or rho <= 0.0:
+        return result
+    beta_eff = float(sst / sigma_z2 * rho)
+    if not np.isfinite(beta_eff) or beta_eff <= 0.0:
+        return result
+    covariance = np.linalg.inv(beta_eff * curvature)
+    covariance = 0.5 * (covariance + covariance.T)
+    eigenvalue, eigenvector = np.linalg.eigh(covariance)
+    clipped = np.clip(eigenvalue,
+                       DSM_COVARIANCE_MIN_PX2, DSM_COVARIANCE_MAX_PX2)
+    covariance = eigenvector @ np.diag(clipped) @ eigenvector.T
+    result.update({
+        "covariance_px": covariance,
+        "beta_eff": beta_eff,
+        "sst": sst,
+        "sigma_z2": sigma_z2,
+        "covariance_source": ("dsm" if np.allclose(clipped, eigenvalue)
+                               else "dsm_clipped"),
+        "dsm_overlap_px": count,
+    })
+    return result
+
+
 def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
                           joint: np.ndarray, resolution_m: float,
                           top_k: int = DEFAULT_TOP_K,
                           nms_px: int = DEFAULT_NMS_PX,
                           max_shift_px: int | None = None,
                           prior: tuple[float, float] | None = None,
-                          radius_px: float | None = None) -> list[dict]:
+                          radius_px: float | None = None,
+                          dsm_covariance: bool = False) -> list[dict]:
     """Return the strongest masked-ECC translation peaks.
 
     Each dict carries subpixel sx/sy in pixels, cc, and integer peak indices.
+    With ``dsm_covariance=True`` the reported covariance_px comes from the
+    DSM height-profile likelihood C=(beta_eff Q)^-1; otherwise it is the
+    normalized engineering inverse Hessian.
     """
     shifts, ecc, _ = masked_ecc_surface(visible, thermal, joint, max_shift_px)
     valid = np.isfinite(ecc)
@@ -150,19 +263,97 @@ def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
                < nms_px ** 2 for item in chosen):
             continue
         dx, dy = _subpixel(ecc, iy, ix)
-        chosen.append({
+        candidate = {
             "sx": sx + dx, "sy": sy + dy,
             "cc": float(ecc[iy, ix]),
             "sx_int": int(sx), "sy_int": int(sy),
-        })
+            "covariance_px": _peak_covariance(ecc, iy, ix).tolist(),
+        }
+        if dsm_covariance:
+            statistics = _dsm_candidate_covariance(
+                visible, thermal, joint, candidate["sx"], candidate["sy"],
+                ecc, iy, ix)
+            covariance = statistics.pop("covariance_px")
+            candidate["covariance_px"] = covariance.tolist()
+            candidate.update(statistics)
+        chosen.append(candidate)
         if len(chosen) >= top_k:
             break
     return chosen
 
 
+CANDIDATE_MODE_MASS_MIN = 0.73
+CANDIDATE_MODE_BANDWIDTH_PX = 2.0
+CANDIDATE_MODE_DEDUPE_PX = 0.5
+
+
+def candidate_mode_quality(candidates, resolution_m: float,
+                           bandwidth_px: float = CANDIDATE_MODE_BANDWIDTH_PX):
+    """Return 2-D mean-shift mode masses for the top ECC candidates.
+
+    Candidate scores are converted to softmax weights with the same beta as
+    the covariance estimator.  Mean-shift with a Gaussian kernel groups peaks
+    that are closer than one NMS radius; the remaining modes are assigned the
+    candidate mass.  A top mode below CANDIDATE_MODE_MASS_MIN is a competing
+    mode rather than a unique peak.
+    """
+    if not candidates:
+        return {"mode_count": 0, "top_mass": 0.0, "second_mass": 0.0,
+                "mode_separation_m": 0.0}
+    positions = np.asarray([[item["sx"], item["sy"]]
+                            for item in candidates], float)
+    scores = np.asarray([item["cc"] for item in candidates], float)
+    logits = SOFTMAX_BETA * (scores - float(np.max(scores)))
+    weights = np.exp(logits)
+    total_weight = float(weights.sum())
+    weights = weights / total_weight if total_weight > 0 else np.full(
+        len(candidates), 1.0 / len(candidates))
+
+    modes = []
+    bandwidth = float(bandwidth_px)
+    for start in positions:
+        center = start.copy()
+        for _ in range(50):
+            delta = positions - center
+            kernel = np.exp(-0.5 * np.einsum("ij,ij->i", delta, delta)
+                            / (bandwidth * bandwidth))
+            local = weights * kernel
+            local_total = float(local.sum())
+            if local_total <= 0:
+                break
+            updated = (local[:, None] * positions).sum(axis=0) / local_total
+            if np.linalg.norm(updated - center) < 1e-6:
+                center = updated
+                break
+            center = updated
+        if not any(np.linalg.norm(center - mode) <= CANDIDATE_MODE_DEDUPE_PX
+                   for mode in modes):
+            modes.append(center)
+
+    if not modes:
+        return {"mode_count": 0, "top_mass": 0.0, "second_mass": 0.0,
+                "mode_separation_m": 0.0}
+    mode_array = np.asarray(modes, float)
+    squared = np.sum((positions[:, None, :] - mode_array[None, :, :]) ** 2,
+                     axis=2)
+    labels = np.argmin(squared, axis=1)
+    masses = np.bincount(labels, weights=weights, minlength=len(modes))
+    order = np.argsort(masses)[::-1]
+    top_mass = float(masses[order[0]])
+    second_mass = float(masses[order[1]]) if len(order) > 1 else 0.0
+    if len(order) > 1:
+        separation_px = float(np.linalg.norm(
+            mode_array[order[0]] - mode_array[order[1]]))
+    else:
+        separation_px = 0.0
+    return {"mode_count": int(len(modes)), "top_mass": top_mass,
+            "second_mass": second_mass,
+            "mode_separation_m": separation_px * float(resolution_m)}
+
+
 def estimate_period_m(visible: np.ndarray, joint: np.ndarray,
                       resolution_m: float, max_period_m: float = 50.0) -> float | None:
-    """Estimate a dominant repeat period from the masked high-pass tile.
+    """Estimate a dominant repeat period from the masked DSM tile.
 
     Returns None when the autocorrelation has no clear off-centre peak.  The
     value is diagnostic only; the ambiguity gate falls back to separation.

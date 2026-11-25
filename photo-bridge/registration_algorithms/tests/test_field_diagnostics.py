@@ -18,6 +18,7 @@ def _synthetic_rows():
                 "east": east, "north": north,
                 "dx_m": target[0] - east, "dy_m": target[1] - north,
                 "cc": 0.95, "quality_weight": 1.0,
+                "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0,
             })
     return rows, matrix, translation
 

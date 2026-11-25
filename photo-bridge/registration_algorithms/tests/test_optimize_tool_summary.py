@@ -31,7 +31,8 @@ def _load_tool():
 def _synthetic_field():
     rows = [{"east": 1000.0 + 20.0 * i, "north": 2000.0 + 20.0 * j,
              "dx_m": 0.30 + 0.002 * i - 0.001 * j,
-             "dy_m": 0.10 - 0.001 * i + 0.002 * j, "cc": 0.9}
+             "dy_m": 0.10 - 0.001 * i + 0.002 * j, "cc": 0.9,
+             "sigma_e": 0.05, "sigma_n": 0.05, "sigma_en": 0.0}
             for i in range(3) for j in range(2)]
     return fit_regularized_field(rows, tile_m=40.0, max_distance_m=30.0)
 
@@ -132,7 +133,8 @@ def test_optimize_tool_requires_result_dir_and_dropped_dead_flags():
     with pytest.raises(SystemExit) as missing:
         tool.main(["--visible-dsm", "visible.tif"])
     assert missing.value.code == 2
-    for removed in (["--erode-m", "0.35"], ["--minimum-pixels", "20"]):
+    for removed in (["--erode-m", "0.35"], ["--minimum-pixels", "20"],
+                    ["--highpass-sigma-m", "1.5"]):
         with pytest.raises(SystemExit) as error:
             tool.main(removed + ["--result-dir", "result"])
         assert error.value.code == 2

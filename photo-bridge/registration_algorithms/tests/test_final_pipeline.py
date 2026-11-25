@@ -49,6 +49,7 @@ def test_pipeline_config_validates_parameters(tmp_path):
     )
     config = pipeline.PipelineConfig(**values)
     assert not hasattr(config, "array_plane_shrinkage")
+    assert not hasattr(config, "planimetric_highpass_sigma_m")
     with pytest.raises(ValueError):
         pipeline.PipelineConfig(**values, grid_step=0)
     with pytest.raises(ValueError):
@@ -57,7 +58,6 @@ def test_pipeline_config_validates_parameters(tmp_path):
     for name, invalid in (("planimetric_resolution_m", 0.0),
                           ("planimetric_tile_m", -1.0),
                           ("planimetric_step_m", 0.0),
-                          ("planimetric_highpass_sigma_m", -1.0),
                           ("planimetric_field_max_distance_m", float("nan"))):
         with pytest.raises(ValueError, match=name):
             pipeline.PipelineConfig(**values, **{name: invalid})

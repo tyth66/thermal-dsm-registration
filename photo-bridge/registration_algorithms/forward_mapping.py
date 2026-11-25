@@ -69,9 +69,8 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     delta_e, delta_n, weight, nearest = field.evaluate(east, north)
     edge_distance = np.full(len(east), np.inf, float)
     edge_tail_applied = np.zeros(len(east), bool)
-    edge_confidence = np.ones(len(east), float)
     if boundary is not None:
-        delta_e, delta_n, edge_distance, edge_tail_applied, edge_confidence = (
+        delta_e, delta_n, edge_distance, edge_tail_applied = (
             evaluate_boundary_field(field, east, north, boundary))
     _require_finite_shift(delta_e, delta_n)
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
@@ -131,7 +130,6 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                 "support_confidence": float(support_confidence[i]),
                 "edge_distance_m": float(edge_distance[i]),
                 "edge_tail_applied": int(bool(edge_tail_applied[i])),
-                "edge_confidence": float(edge_confidence[i]),
             })
         component_mapped = bool(np.any(naive_valid[start:end]))
         center_row = next((row for row in panel_rows if row["point"] == "center"),
@@ -186,9 +184,8 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
     delta_e, delta_n, weight, nearest = field.evaluate(east, north)
     edge_distance = np.full(len(east), np.inf, float)
     edge_tail_applied = np.zeros(len(east), bool)
-    edge_confidence = np.ones(len(east), float)
     if boundary is not None:
-        delta_e, delta_n, edge_distance, edge_tail_applied, edge_confidence = (
+        delta_e, delta_n, edge_distance, edge_tail_applied = (
             evaluate_boundary_field(field, east, north, boundary))
     east_t_global = east + delta_e
     north_t_global = north + delta_n
@@ -257,7 +254,6 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
         "field_valid": field_valid,
         "edge_distance_m": edge_distance,
         "edge_tail_applied": edge_tail_applied,
-        "edge_confidence": edge_confidence,
     }
 
 
