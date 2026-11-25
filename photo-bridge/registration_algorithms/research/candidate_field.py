@@ -269,20 +269,24 @@ def estimate_sigma_f(records, field, responsibilities, *,
     east = np.asarray([record["east"] for record in records], float)
     north = np.asarray([record["north"] for record in records], float)
     dx, dy, _, _ = field.evaluate(east, north)
-    residuals = positions - np.column_stack([dx, dy])[:, None, :]
+    field_shift = np.column_stack([dx, dy])
+    valid = np.arange(positions.shape[1])[None, :] < counts[:, None]
+    residuals = (positions - field_shift[:, None, :])[valid]
+    candidate_covariances = covariances[valid]
+    candidate_q = q[valid]
 
     def objective(variance):
         variance = float(variance)
-        total = 0.0
-        for index in range(len(records)):
-            for column in range(int(counts[index])):
-                covariance = covariances[index, column] + variance * np.eye(2)
-                sign, log_det = np.linalg.slogdet(covariance)
-                if sign <= 0:
-                    return np.inf
-                residual = residuals[index, column]
-                total += 0.5 * q[index, column] * (
-                    log_det + residual @ np.linalg.inv(covariance) @ residual)
+        a = candidate_covariances[:, 0, 0] + variance
+        b = candidate_covariances[:, 0, 1]
+        c = candidate_covariances[:, 1, 1] + variance
+        determinant = a * c - b * b
+        if np.any(determinant <= 0.0):
+            return np.inf
+        re = residuals[:, 0]
+        rn = residuals[:, 1]
+        quadratic = (c * re * re - 2.0 * b * re * rn + a * rn * rn) / determinant
+        total = 0.5 * float(np.sum(candidate_q * (np.log(determinant) + quadratic)))
         if prior_weight > 0.0:
             total += 0.5 * prior_weight * (
                 (np.sqrt(variance) - prior_sigma_m) / prior_scale_m) ** 2
