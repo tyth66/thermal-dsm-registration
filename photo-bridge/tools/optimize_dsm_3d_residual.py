@@ -21,11 +21,11 @@ from registration_algorithms.application import (
 from registration_algorithms.io_utils import load_json, stats
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_VISIBLE_DSM = (REPO_ROOT / "analysis/ortho-data"
+DEFAULT_VISIBLE_DSM = (REPO_ROOT / "cross-modal-dsm-matching/ortho-data"
                        / "visible_test_run_277_station_141/map/dsm.tif")
-DEFAULT_THERMAL_DSM = (REPO_ROOT / "analysis/ortho-data"
+DEFAULT_THERMAL_DSM = (REPO_ROOT / "cross-modal-dsm-matching/ortho-data"
                        / "thermal_test_run_277_station_141/map/dsm.tif")
-DEFAULT_OUT = (REPO_ROOT / "analysis/photo-bridge/outputs/visualizations"
+DEFAULT_OUT = (REPO_ROOT / "cross-modal-dsm-matching/photo-bridge/outputs/visualizations"
                / "run277_gnss_sg5_20261114_verified" / "thermal_world_model"
                / "dsm_3d_residual_optimized")
 

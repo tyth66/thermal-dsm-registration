@@ -15,7 +15,7 @@ from registration_algorithms.application import write_json
 from registration_algorithms.visible_world_model import build_visible_world_model
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUT = REPO_ROOT / "analysis/photo-bridge/outputs/visible_world_model"
+DEFAULT_OUT = REPO_ROOT / "cross-modal-dsm-matching/photo-bridge/outputs/visible_world_model"
 
 
 def main(argv=None) -> int:

@@ -18,14 +18,14 @@ from registration_algorithms.application import (
 from registration_algorithms.io_utils import load_json
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TOOLS = REPO_ROOT / "analysis/photo-bridge/tools"
-DEFAULT_VISIBLE_DSM = (REPO_ROOT / "analysis/ortho-data"
+TOOLS = REPO_ROOT / "cross-modal-dsm-matching/photo-bridge/tools"
+DEFAULT_VISIBLE_DSM = (REPO_ROOT / "cross-modal-dsm-matching/ortho-data"
                        / "visible_test_run_277_station_141/map/dsm.tif")
-DEFAULT_THERMAL_DSM = (REPO_ROOT / "analysis/ortho-data"
+DEFAULT_THERMAL_DSM = (REPO_ROOT / "cross-modal-dsm-matching/ortho-data"
                        / "thermal_test_run_277_station_141/map/dsm.tif")
-DEFAULT_VISIBLE_ORTHO = (REPO_ROOT / "analysis/ortho-data"
+DEFAULT_VISIBLE_ORTHO = (REPO_ROOT / "cross-modal-dsm-matching/ortho-data"
                          / "visible_test_run_277_station_141/map/result.tif")
-DEFAULT_THERMAL_ORTHO = (REPO_ROOT / "analysis/ortho-data"
+DEFAULT_THERMAL_ORTHO = (REPO_ROOT / "cross-modal-dsm-matching/ortho-data"
                          / "thermal_test_run_277_station_141/map/result.tif")
 PLANIMETRIC_RESOLUTION_M = 0.1
 PLANIMETRIC_TILE_M = 40.0

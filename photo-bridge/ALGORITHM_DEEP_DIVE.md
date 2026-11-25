@@ -928,7 +928,7 @@ run296 重跑对比：GLS 相对旧标量场的面板中心位移 mean **0.0174 
 测试：
 
 ```bash
-cd analysis/photo-bridge
+cd cross-modal-dsm-matching/photo-bridge
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest registration_algorithms/tests -q
 # 119 passed
 ```
