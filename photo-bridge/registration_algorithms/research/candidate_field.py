@@ -126,62 +126,64 @@ def candidate_responsibilities(records, field, *, resolution_m: float,
     north = np.asarray([record["north"] for record in records], float)
     field_east, field_north, _, _ = field.evaluate(east, north)
     field_shift = np.column_stack([field_east, field_north])
-    q = np.zeros_like(scores)
-    q0 = np.zeros(len(records))
-    tile_mass = np.zeros(len(records))
-    candidate_weights = np.zeros_like(scores)
-    precision = np.zeros((len(records), 2, 2))
-    ambiguity_loss = np.zeros((len(records), 2, 2))
-    information = np.zeros((len(records), 2, 2))
-    validity_entropy = np.zeros(len(records))
-    alias_entropy = np.zeros(len(records))
-    total_entropy = np.zeros(len(records))
-    log_match_evidence = np.full(len(records), -np.inf)
-    match_evidence = np.zeros(len(records))
-    log_odds = np.full(len(records), -np.inf)
     if temperature <= 0:
         raise ValueError("temperature must be positive")
+    valid = np.arange(scores.shape[1])[None, :] < counts[:, None]
+    safe_scores = np.where(valid, scores, -np.inf)
+    max_score = np.max(safe_scores, axis=1)
+    weight = np.exp(beta * (safe_scores - max_score[:, None]))
+    weight = np.where(valid, weight, 0.0)
+    weight /= np.sum(weight, axis=1)[:, None]
+    covariance = covariances.copy()
+    covariance[~valid] = np.eye(2)
+    covariance += float(sigma_f_m) ** 2 * np.eye(2)
+    delta = positions - field_shift[:, None, :]
+    delta[~valid] = 0.0
+    a = covariance[:, :, 0, 0]
+    b = covariance[:, :, 0, 1]
+    c = covariance[:, :, 1, 1]
+    determinant = a * c - b * b
+    inverse_covariance = np.empty_like(covariance)
+    inverse_covariance[:, :, 0, 0] = c / determinant
+    inverse_covariance[:, :, 0, 1] = -b / determinant
+    inverse_covariance[:, :, 1, 0] = -b / determinant
+    inverse_covariance[:, :, 1, 1] = a / determinant
+    re = delta[:, :, 0]
+    rn = delta[:, :, 1]
+    quadratic = (c * re * re - 2.0 * b * re * rn + a * rn * rn) / determinant
+    log_likelihood = -0.5 * (
+        2.0 * np.log(2.0 * np.pi) + np.log(determinant) + quadratic)
+    log_b = log_likelihood - np.log(background)
+    log_terms = np.log(np.maximum(weight, 1e-300)) + log_b
+    log_terms[~valid] = -np.inf
+    log_e = logsumexp(log_terms, axis=1)
     log_prior_odds = np.log1p(-outlier_prior) - np.log(outlier_prior)
-    for index in range(len(records)):
-        count = int(counts[index])
-        weight = scores[index, :count].copy()
-        weight = np.exp(beta * (weight - np.max(weight)))
-        weight /= np.sum(weight)
-        covariance = covariances[index, :count] + (
-            float(sigma_f_m) ** 2) * np.eye(2)
-        inverse_covariance = np.linalg.inv(covariance)
-        delta = positions[index, :count] - field_shift[index]
-        log_likelihood = _log_gaussian(delta, covariance)
-        density = background[index, :count]
-        log_b = log_likelihood - np.log(density)
-        log_e = logsumexp(np.log(np.maximum(weight, 1e-300)) + log_b)
-        log_match_evidence[index] = log_e
-        match_evidence[index] = float(np.exp(log_e))
-        log_odds[index] = (log_prior_odds + log_e) / float(temperature)
-        mass = float(expit(log_odds[index]))
-        tile_mass[index] = mass
-        q0[index] = 1.0 - mass
-        w = np.exp((np.log(np.maximum(weight, 1e-300)) + log_b - log_e)
-                   / float(temperature))
-        w /= np.sum(w)
-        candidate_weights[index, :count] = w
-        q[index, :count] = mass * w
-        if 0.0 < mass < 1.0:
-            validity_entropy[index] = (-mass * np.log(mass)
-                                       - (1.0 - mass) * np.log1p(-mass))
-        positive = w > 0.0
-        alias_entropy[index] = -float(np.sum(w[positive] * np.log(w[positive])))
-        total_entropy[index] = (validity_entropy[index]
-                                + mass * alias_entropy[index])
-        v = np.einsum("kij,kj->ki", inverse_covariance, delta)
-        weighted_v = q[index, :count] @ v
-        weighted_vv = np.einsum(
-            "k,ki,kj->ij", q[index, :count], v, v)
-        precision[index] = np.einsum(
-            "k,kij->ij", q[index, :count], inverse_covariance)
-        ambiguity_loss[index] = (weighted_vv
-                                 - np.outer(weighted_v, weighted_v))
-        information[index] = precision[index] - ambiguity_loss[index]
+    log_odds = (log_prior_odds + log_e) / float(temperature)
+    tile_mass = expit(log_odds)
+    q0 = 1.0 - tile_mass
+    w = np.exp((log_terms - log_e[:, None]) / float(temperature))
+    w = np.where(valid, w, 0.0)
+    w /= np.sum(w, axis=1)[:, None]
+    q = tile_mass[:, None] * w
+    candidate_weights = w
+    positive = w > 0.0
+    log_w = np.log(np.where(positive, w, 1.0))
+    alias_entropy = -np.sum(np.where(positive, w * log_w, 0.0), axis=1)
+    validity_entropy = np.zeros(len(records))
+    interior = (tile_mass > 0.0) & (tile_mass < 1.0)
+    validity_entropy[interior] = (
+        -tile_mass[interior] * np.log(tile_mass[interior])
+        - (1.0 - tile_mass[interior]) * np.log1p(-tile_mass[interior]))
+    total_entropy = validity_entropy + tile_mass * alias_entropy
+    v = np.einsum("nkij,nkj->nki", inverse_covariance, delta)
+    weighted_v = np.sum(q[:, :, None] * v, axis=1)
+    weighted_vv = np.einsum("nk,nki,nkj->nij", q, v, v)
+    precision = np.einsum("nk,nkij->nij", q, inverse_covariance)
+    ambiguity_loss = (weighted_vv
+                      - weighted_v[:, :, None] * weighted_v[:, None, :])
+    information = precision - ambiguity_loss
+    log_match_evidence = log_e
+    match_evidence = np.exp(log_e)
     return {
         "q": q,
         "q0": q0,
@@ -340,27 +342,24 @@ def _exact_field(records, responsibilities, *, sigma_f_m: float,
     design[1::2, 3] = 1.0
     design[0::2, 4::2] = kernel
     design[1::2, 5::2] = kernel
-    precisions = np.zeros((count, 2, 2))
-    rhs = np.zeros((count, 2))
+    valid = np.arange(covariances.shape[1])[None, :] < counts[:, None]
+    candidate_positions = np.where(valid[:, :, None], positions, 0.0)
+    candidate_q = np.where(valid, q, 0.0)
+    candidate_covariances = covariances.copy()
+    candidate_covariances[~valid] = np.eye(2)
+    candidate_covariances += float(sigma_f_m) ** 2 * np.eye(2)
+    inv_covariances = np.linalg.inv(candidate_covariances)
+    precisions = np.einsum("nk,nkij->nij", candidate_q, inv_covariances)
+    rhs = np.einsum("nk,nkij,nkj->ni", candidate_q, inv_covariances,
+                    candidate_positions)
+    nonzero = np.abs(np.trace(precisions, axis1=1, axis2=2)) > 1e-12
+    regularized = precisions + 1e-12 * np.eye(2)
     effective = np.zeros((count, 2))
-    for index in range(count):
-        tile_precision = np.zeros((2, 2))
-        tile_rhs = np.zeros(2)
-        item_count = int(counts[index])
-        for column in range(item_count):
-            covariance = (covariances[index, column]
-                          + float(sigma_f_m) ** 2 * np.eye(2))
-            precision = np.linalg.inv(covariance)
-            weight = float(q[index, column])
-            tile_precision += weight * precision
-            tile_rhs += weight * precision @ positions[index, column]
-        precisions[index] = tile_precision
-        rhs[index] = tile_rhs
-        if abs(np.trace(tile_precision)) > 1e-12:
-            effective[index] = np.linalg.solve(
-                tile_precision + 1e-12 * np.eye(2), tile_rhs)
-        elif item_count:
-            effective[index] = positions[index, :item_count].mean(axis=0)
+    if np.any(nonzero):
+        effective[nonzero] = np.linalg.solve(
+            regularized[nonzero], rhs[nonzero, :, None])[:, :, 0]
+    fallback = np.sum(candidate_positions, axis=1) / np.maximum(counts, 1)[:, None]
+    effective[~nonzero] = fallback[~nonzero]
     stacked_design = []
     stacked_rhs = []
     for index in range(count):
