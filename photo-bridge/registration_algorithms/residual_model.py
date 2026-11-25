@@ -5,6 +5,7 @@ from typing import Iterable
 
 import numpy as np
 from scipy.spatial import cKDTree
+from scipy.spatial.distance import cdist
 
 
 def field_support_mask(delta_e, delta_n, weight, nearest, max_distance_m):
@@ -398,8 +399,7 @@ class RegularizedPlanimetricField(PlanimetricField):
         for start in range(0, len(east), chunk):
             stop = start + chunk
             points = np.column_stack([east[start:stop], north[start:stop]])
-            squared = ((points[:, None, 0] - self.centers[None, :, 0]) ** 2
-                       + (points[:, None, 1] - self.centers[None, :, 1]) ** 2)
+            squared = cdist(points, self.centers, "sqeuclidean")
             kernel = np.exp(-0.5 * squared / (sigma ** 2))
             result[start:stop] = (kernel @ self.weights) / total_weight
         return result
@@ -481,8 +481,7 @@ class RegularizedPlanimetricField(PlanimetricField):
         density = np.zeros(len(points), float)
         support = np.zeros(len(points), float)
         if len(self.centers):
-            squared = ((points[:, None, 0] - self.centers[None, :, 0]) ** 2
-                       + (points[:, None, 1] - self.centers[None, :, 1]) ** 2)
+            squared = cdist(points, self.centers, "sqeuclidean")
             kernel = np.exp(-0.5 * squared / (self.kernel_length_m ** 2))
             residual = kernel @ self.coefficients
             density = kernel.sum(axis=1) / max(len(self.centers), 1)

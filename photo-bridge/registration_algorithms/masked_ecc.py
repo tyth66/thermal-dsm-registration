@@ -11,8 +11,8 @@ integer-shift surface costs six FFTs per tile.
 """
 from __future__ import annotations
 
+import cv2
 import numpy as np
-from scipy.ndimage import maximum_filter
 
 DEFAULT_TOP_K = 5
 DEFAULT_NMS_PX = 2
@@ -172,8 +172,9 @@ def masked_ecc_peaks(ecc: np.ndarray, nms_px: int = DEFAULT_NMS_PX):
     if not np.any(valid):
         return np.empty((0, 2), int), np.empty(0, float), np.empty(0, int)
     surface = np.where(valid, ecc, -np.inf)
-    local_max = maximum_filter(surface, size=2 * nms_px + 1,
-                               mode="constant", cval=-np.inf)
+    kernel = np.ones((2 * nms_px + 1, 2 * nms_px + 1), np.uint8)
+    local_max = cv2.dilate(surface, kernel, borderType=cv2.BORDER_CONSTANT,
+                           borderValue=-np.inf)
     peak_indices = np.argwhere(valid & (surface >= local_max - 1e-12))
     if len(peak_indices) == 0:
         iy, ix = np.unravel_index(np.nanargmax(ecc), ecc.shape)
