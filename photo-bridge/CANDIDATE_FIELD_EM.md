@@ -4,7 +4,7 @@
 
 更新时间：2026-11-25
 
-测试：`113 passed`
+测试：`114 passed`
 
 ## 1. 目标
 
@@ -398,7 +398,7 @@ DSM profile 协方差的原始 \(\beta_{\rm eff}\) 中位数约 \(7\times10^5\)�
 
 ## 14. 测试与代码
 
-- 测试：`113 passed`
+- 测试：`114 passed`
 - [research/candidate_field.py](registration_algorithms/research/candidate_field.py)
 - [research/dsm_covariance.py](registration_algorithms/research/dsm_covariance.py)
 - [masked_ecc.py](registration_algorithms/masked_ecc.py)
