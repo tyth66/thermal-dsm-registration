@@ -65,5 +65,6 @@ def test_research_end_to_end_from_dsm_paths(tmp_path):
     assert result.planimetric.sigma_f_m > 0.0
     assert np.isfinite(result.planimetric.field.translation).all()
     assert 0.0 < result.planimetric.tiling.tile_m <= 4.0
-    assert result.mapping.grid["east"].size > 0
+    assert result.mapping.grid["grid_points"] > 0
+    assert result.mapping.grid["summary_only"] is True
     assert result.mapping.summary["method"].startswith("visible ortho")

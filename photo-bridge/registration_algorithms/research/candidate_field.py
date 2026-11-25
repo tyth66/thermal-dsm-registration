@@ -373,9 +373,10 @@ def _exact_field(records, responsibilities, *, sigma_f_m: float,
     prior[4:] = float(ridge)
     stacked_design.append(np.diag(np.sqrt(prior)))
     stacked_rhs.append(np.zeros(dimension))
-    theta = np.linalg.lstsq(
-        np.vstack(stacked_design), np.concatenate(stacked_rhs),
-        rcond=None)[0]
+    augmented = np.vstack(stacked_design)
+    target = np.concatenate(stacked_rhs)
+    normal = augmented.T @ augmented
+    theta = np.linalg.solve(normal, augmented.T @ target)
     gradient = np.array([[theta[0], -theta[1]], [theta[1], theta[0]]])
     translation = theta[2:4]
     coefficients = np.column_stack([theta[4::2], theta[5::2]])

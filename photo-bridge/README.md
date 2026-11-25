@@ -55,7 +55,8 @@ result = estimate_research_planimetric(ResearchPlanimetricInputs(
 The research API returns the field, inliers, panel components, EM history,
 responsibilities and posterior diagnostics. For in-memory panel/grid mapping,
 use `run_research_pipeline`, which adds the production mapping layer without
-writing a final JSON.
+writing a final JSON. It defaults to `grid_mode="summary"`; set
+`grid_mode="full"` on the pipeline inputs to retain mapping arrays.
 
 ## Package boundary
 
