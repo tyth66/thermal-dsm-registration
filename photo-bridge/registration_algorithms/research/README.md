@@ -7,6 +7,7 @@ in `CURRENT_ALGORITHM.md`.
 ## Contents
 
 - `candidate_field.py`: all-raw candidate / field joint MAP-EM prototype.
+- `application.py`: end-to-end `estimate_research_planimetric` API.
 - `dsm_covariance.py`: optional DSM-profile candidate covariance
   `C=(beta_eff Q)^-1`.
 - `tests/`: research tests, including the double-peak information-loss check.

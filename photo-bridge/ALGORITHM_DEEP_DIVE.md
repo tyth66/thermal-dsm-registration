@@ -2,7 +2,7 @@
 
 > 代码基线：`4a56a29 feat: finalize data-driven DSM mapping pipeline`  
 > 正式样例：`outputs/run296`（8295 个组件、238 个阵列）  
-> 测试：`112 passed`（本机复跑）  
+> 测试：`113 passed`（本机复跑）
 > 本文目的：说明算法流程、每一步的设计动机、为什么这套组合有效，以及代码与文档不一致、值得警惕的地方。
 
 > **2026-11-24 变更**：反向一致性检查与 `edge_confidence` 已从代码中移除。本文第 2.4.2、5.1、5.6 节保留为“已移除问题的分析记录”，其余流程、证据和结论仍适用。
@@ -930,7 +930,7 @@ run296 重跑对比：GLS 相对旧标量场的面板中心位移 mean **0.0174 
 ```bash
 cd analysis/photo-bridge
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest registration_algorithms/tests -q
-# 112 passed
+# 113 passed
 ```
 
 141 平面场实跑（仅场阶段，`visible_world={'panels': []}`）：

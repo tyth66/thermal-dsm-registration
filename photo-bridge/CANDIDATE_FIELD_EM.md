@@ -4,7 +4,7 @@
 
 更新时间：2026-11-25
 
-测试：`112 passed`
+测试：`113 passed`
 
 ## 1. 目标
 
@@ -299,6 +299,47 @@ C_{ij}=(\beta_{ij}^{\rm eff}Q_{ij})^{-1}
 
 当前只从 top1 初始化，没有多假设模式比较；coherent alias 不能由单模式局部后验解决。
 
+## 12.1 端到端调用
+
+研究包现在提供与生产 `estimate_planimetric` 同级的直接入口：
+
+```python
+import json
+from registration_algorithms.research import (
+    ResearchPlanimetricInputs, estimate_research_planimetric,
+)
+
+world = json.load(open("world_model.json"))
+result = estimate_research_planimetric(ResearchPlanimetricInputs(
+    visible_dsm="visible_dsm.tif",
+    thermal_dsm="thermal_dsm.tif",
+    visible_world=world,
+    tile_m=40.0,
+    step_m=20.0,
+    max_iterations=6,
+    dsm_covariance=False,
+))
+
+result.field
+result.history
+result.responsibilities
+result.components
+result.sigma_f_m
+```
+
+该入口内部完成：
+
+```text
+DSM 读取 / 公共网格
+→ 自适应 tiling
+→ register(..., apply_domain=False) 收集全部原始候选
+→ fit_candidate_field_em
+→ 最终 sigma/责任
+→ panel components
+```
+
+`dsm_covariance=True` 时使用 `research.dsm_covariance.dsm_candidate_covariance` 回调；生产入口不导入该包。
+
 ## 13. 当前数值状态
 
 以下结果是研究原型，不是生产验收：
@@ -333,7 +374,7 @@ DSM profile 协方差的原始 \(\beta_{\rm eff}\) 中位数约 \(7\times10^5\)�
 
 ## 14. 测试与代码
 
-- 测试：`112 passed`
+- 测试：`113 passed`
 - [research/candidate_field.py](registration_algorithms/research/candidate_field.py)
 - [research/dsm_covariance.py](registration_algorithms/research/dsm_covariance.py)
 - [masked_ecc.py](registration_algorithms/masked_ecc.py)
