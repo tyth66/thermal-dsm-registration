@@ -120,13 +120,19 @@ def _fit_local(field, bounds):
 
 
 def evaluate_boundary_field(field, east, north, bounds, *,
-                            band_m: float | None = None):
-    """Apply the tangent-local boundary model and return edge diagnostics."""
+                            band_m: float | None = None,
+                            base_e=None, base_n=None):
+    """Apply the tangent-local boundary model and return edge diagnostics.
+
+    ``base_e``/``base_n`` let callers reuse a displacement already evaluated
+    by the mapping layer instead of evaluating the whole field twice.
+    """
     east = np.asarray(east, float)
     north = np.asarray(north, float)
-    base_e, base_n, _, _ = field.evaluate(east, north)
-    base_e = np.asarray(base_e, float)
-    base_n = np.asarray(base_n, float)
+    if base_e is None or base_n is None:
+        base_e, base_n, _, _ = field.evaluate(east, north)
+    base_e = np.asarray(base_e, float).copy()
+    base_n = np.asarray(base_n, float).copy()
     size = len(east)
     edge_distance = np.full(size, np.inf, float)
     applied = np.zeros(size, bool)

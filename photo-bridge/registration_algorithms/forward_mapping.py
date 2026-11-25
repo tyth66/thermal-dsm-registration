@@ -71,7 +71,8 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     edge_tail_applied = np.zeros(len(east), bool)
     if boundary is not None:
         delta_e, delta_n, edge_distance, edge_tail_applied = (
-            evaluate_boundary_field(field, east, north, boundary))
+            evaluate_boundary_field(field, east, north, boundary,
+                                    base_e=delta_e, base_n=delta_n))
     _require_finite_shift(delta_e, delta_n)
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                     field_max_distance)
@@ -186,7 +187,8 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
     edge_tail_applied = np.zeros(len(east), bool)
     if boundary is not None:
         delta_e, delta_n, edge_distance, edge_tail_applied = (
-            evaluate_boundary_field(field, east, north, boundary))
+            evaluate_boundary_field(field, east, north, boundary,
+                                    base_e=delta_e, base_n=delta_n))
     east_t_global = east + delta_e
     north_t_global = north + delta_n
     thermal_inverse = ~thermal_transform

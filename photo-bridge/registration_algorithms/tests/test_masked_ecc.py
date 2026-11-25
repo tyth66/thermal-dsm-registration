@@ -144,6 +144,41 @@ def test_fft_correlation_is_linear_not_circular():
             assert correlation[8 + sy, 8 + sx] == pytest.approx(expected, abs=1e-10)
 
 
+def test_candidates_accept_precomputed_surface(monkeypatch):
+    import registration_algorithms.masked_ecc as module
+    shifts = np.arange(-4, 5)
+    surface = np.full((9, 9), -np.inf)
+    surface[4, 4] = 0.9
+    surface[4, 8] = 0.8
+    monkeypatch.setattr(
+        module, "masked_ecc_surface",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("surface must be reused")))
+    candidates = module.masked_ecc_candidates(
+        np.zeros((8, 8)), np.zeros((8, 8)), np.ones((8, 8), bool),
+        0.1, top_k=2, surface=(shifts, surface))
+    assert len(candidates) == 2
+    assert candidates[0]["sx"] == pytest.approx(0.0, abs=0.1)
+    assert candidates[1]["sx"] == pytest.approx(4.0, abs=0.1)
+
+
+def test_register_tile_skips_period_for_unique_mode(monkeypatch):
+    import registration_algorithms.dsm_registration as module
+    calls = []
+    def fake_period(*args, **kwargs):
+        calls.append(1)
+        return 2.0
+    monkeypatch.setattr(module, "estimate_period_m", fake_period)
+    visible, thermal = _structured_pair()
+    transform = from_origin(596000.0, 3234000.0, 0.1, 0.1)
+    record = _register_tile(
+        visible, thermal, np.ones_like(visible, bool), transform, 0.1,
+        visible.shape[0], row=0, column=0, top=0, left=0)
+    assert record is not None
+    assert calls == []
+    assert record["period_m"] is None
+
+
 def test_competing_separation_keeps_close_peaks(monkeypatch):
     import registration_algorithms.masked_ecc as module
     from registration_algorithms.dsm_registration import _competing_separation

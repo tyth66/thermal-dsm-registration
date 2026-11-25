@@ -159,14 +159,20 @@ def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
                           max_shift_px: int | None = None,
                           prior: tuple[float, float] | None = None,
                           radius_px: float | None = None,
-                          covariance_fn=None) -> list[dict]:
+                          covariance_fn=None,
+                          surface=None) -> list[dict]:
     """Return the strongest masked-ECC translation peaks.
 
     Each dict carries subpixel sx/sy in pixels, cc, and integer peak indices.
     ``covariance_fn`` is an optional research callback; production leaves it
-    None and uses the normalized inverse-Hessian covariance.
+    None and uses the normalized inverse-Hessian covariance.  ``surface`` is
+    an optional precomputed ``(shifts, ecc)`` pair so forward and global
+    candidate selection reuse one correlation surface.
     """
-    shifts, ecc, _ = masked_ecc_surface(visible, thermal, joint, max_shift_px)
+    if surface is None:
+        shifts, ecc, _ = masked_ecc_surface(visible, thermal, joint, max_shift_px)
+    else:
+        shifts, ecc = surface[0], surface[1]
     valid = np.isfinite(ecc)
     if not np.any(valid):
         return []

@@ -16,6 +16,7 @@ from .dsm_sampling import elevation_range_for
 from .masked_ecc import (
     CANDIDATE_MODE_MASS_MIN, SIGMA0_M, SOFTMAX_BETA,
     candidate_mode_quality, estimate_period_m, masked_ecc_candidates,
+    masked_ecc_surface,
 )
 # Reuse the single projected-metre CRS predicate instead of duplicating it: a
 # DSM grid is only meaningful when both rasters share one metric, north-up frame.
@@ -155,13 +156,15 @@ def _register_tile(visible, thermal, joint, transform, resolution,
         prior = (0.0, 0.0)
     radius_px = max(8.0, float(prior_radius_m) / resolution)
 
+    surface = masked_ecc_surface(first, second, mask)
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
-        prior=prior, radius_px=radius_px, covariance_fn=covariance_fn)
+        prior=prior, radius_px=radius_px, covariance_fn=covariance_fn,
+        surface=surface)
     if not forward:
         return None
     global_forward = masked_ecc_candidates(
-        first, second, mask, resolution, top_k=1)
+        first, second, mask, resolution, top_k=1, surface=surface)
     best = forward[0]
     if global_forward:
         global_best = global_forward[0]
@@ -188,9 +191,15 @@ def _register_tile(visible, thermal, joint, transform, resolution,
     else:
         margin = 1.0
         separation_m = 0.0
-    period_m = estimate_period_m(first, mask, resolution)
-    separation_threshold = max(1.0, 0.5 * period_m) if period_m else 1.0
     mode_quality = candidate_mode_quality(forward, resolution)
+    # Period estimation is an extra full-tile FFT and only affects the
+    # ambiguity threshold when the candidate mode is already weak.  Skip it
+    # for unique modes; period_m stays None as an explicit diagnostic.
+    period_m = None
+    if (mode_quality["top_mass"] < CANDIDATE_MODE_MASS_MIN
+            and mode_quality["mode_separation_m"] >= 1.0):
+        period_m = estimate_period_m(first, mask, resolution)
+    separation_threshold = max(1.0, 0.5 * period_m) if period_m else 1.0
     candidate_ambiguous = bool(
         mode_quality["top_mass"] < CANDIDATE_MODE_MASS_MIN
         and mode_quality["mode_separation_m"] >= separation_threshold)

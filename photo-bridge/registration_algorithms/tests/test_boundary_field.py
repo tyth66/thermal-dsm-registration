@@ -40,6 +40,27 @@ def test_boundary_field_leaves_interior_unchanged():
     np.testing.assert_allclose(dn, base_n)
 
 
+def test_boundary_field_accepts_precomputed_base():
+    field = _field()
+    east = np.array([100.0])
+    north = np.array([199.0])
+    base_e, base_n, _, _ = field.evaluate(east, north)
+    expected = evaluate_boundary_field(
+        field, east, north, (0.0, 200.0, 0.0, 200.0))
+    original_evaluate = field.evaluate
+    def guarded(east_arg, north_arg):
+        if len(east_arg) == 1:
+            raise AssertionError("query displacement must be reused")
+        return original_evaluate(east_arg, north_arg)
+    field.evaluate = guarded
+    actual = evaluate_boundary_field(
+        field, east, north, (0.0, 200.0, 0.0, 200.0),
+        base_e=base_e, base_n=base_n)
+    np.testing.assert_allclose(actual[0], expected[0])
+    np.testing.assert_allclose(actual[1], expected[1])
+    np.testing.assert_array_equal(actual[2], expected[2])
+
+
 def test_boundary_field_zero_at_two_tile_range():
     field = _field()
     de, dn, _, applied = evaluate_boundary_field(
