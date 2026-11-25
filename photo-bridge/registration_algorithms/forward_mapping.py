@@ -165,12 +165,109 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     return rows
 
 
+def _grid_summary(visible_world: dict, field: PlanimetricField,
+                  visible_transform, visible_width: int, visible_height: int,
+                  thermal_transform, thermal_width: int, thermal_height: int,
+                  thermal_alpha: np.ndarray, step: int,
+                  field_max_distance: float | None,
+                  boundary, field_chunk_workers: int) -> dict:
+    grid_height = visible_height // step
+    grid_width = visible_width // step
+    if grid_height == 0 or grid_width == 0:
+        raise ValueError("grid step exceeds visible raster dimensions")
+    columns = (np.arange(grid_width) + 0.5) * step
+    inverse = ~visible_transform
+    thermal_inverse = ~thermal_transform
+    panel_ids = [panel["panel_id"] for panel in visible_world["panels"]]
+    panel_index = {panel_id: index + 1 for index, panel_id in enumerate(panel_ids)}
+    mask = np.zeros((grid_height, grid_width), np.uint16)
+    for panel in visible_world["panels"]:
+        panel_id = panel["panel_id"]
+        corners = np.asarray(panel["corners_xyz"], float)[:, :2]
+        col, row = inverse @ (corners[:, 0], corners[:, 1])
+        polygon = np.column_stack([col / step, row / step]).astype(np.int32)
+        cv2.fillPoly(mask, [polygon], panel_index[panel_id])
+    coverage_points = [_panel_points(panel) for panel in visible_world["panels"]]
+    point_counts = {len(points) for points in coverage_points}
+    if point_counts - {5}:
+        raise ValueError("panel point count is not five: %s" % sorted(point_counts))
+    point_east = np.asarray([point[1][0] for points in coverage_points for point in points], float)
+    point_north = np.asarray([point[1][1] for points in coverage_points for point in points], float)
+    with np.errstate(invalid="ignore", over="ignore"):
+        point_u, point_v = thermal_inverse @ (point_east, point_north)
+
+    def alpha_sample(u, v):
+        inside = (np.isfinite(u) & np.isfinite(v) & (u >= 0) & (u < thermal_width)
+                  & (v >= 0) & (v < thermal_height))
+        alpha = np.zeros(len(u), np.uint8)
+        rows_idx = np.clip(v[inside].astype(int), 0, thermal_alpha.shape[0] - 1)
+        cols_idx = np.clip(u[inside].astype(int), 0, thermal_alpha.shape[1] - 1)
+        alpha[inside] = thermal_alpha[rows_idx, cols_idx]
+        return inside, alpha
+
+    point_inside, point_alpha = alpha_sample(point_u, point_v)
+    covered = (point_inside & (point_alpha > 0)).reshape(-1, 5).any(axis=1)
+    chunk_rows = max(1, 100_000 // grid_width)
+    fields = {name: [] for name in (
+        "delta_e", "delta_n", "valid", "naive_valid", "corrected_valid",
+        "target_nodata", "field_valid", "panel_mask", "edge_tail_applied")}
+    for start in range(0, grid_height, chunk_rows):
+        stop = min(start + chunk_rows, grid_height)
+        row_grid, column_grid = np.meshgrid(
+            (np.arange(start, stop) + 0.5) * step, columns, indexing="ij")
+        east, north = visible_transform @ (column_grid.ravel(), row_grid.ravel())
+        delta_e, delta_n, weight, nearest, _ = _evaluate_with_support(
+            field, east, north, field_chunk_workers)
+        edge_tail_applied = np.zeros(len(east), bool)
+        if boundary is not None:
+            delta_e, delta_n, _, edge_tail_applied = evaluate_boundary_field(
+                field, east, north, boundary, base_e=delta_e, base_n=delta_n)
+        east_t = east + delta_e
+        north_t = north + delta_n
+        with np.errstate(invalid="ignore", over="ignore"):
+            naive_u, naive_v = thermal_inverse @ (east, north)
+            corrected_u, corrected_v = thermal_inverse @ (east_t, north_t)
+        naive_inside, naive_alpha = alpha_sample(naive_u, naive_v)
+        corrected_inside, corrected_alpha = alpha_sample(corrected_u, corrected_v)
+        naive_valid = naive_inside & (naive_alpha > 0)
+        corrected_valid = corrected_inside & (corrected_alpha > 0)
+        field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
+                                        field_max_distance)
+        if not np.all(np.isfinite(delta_e) & np.isfinite(delta_n)):
+            raise ValueError("non-finite planimetric prediction")
+        index = mask[start:stop].ravel()
+        panel_mask = index > 0
+        valid = naive_valid.copy()
+        valid[index > 0] = covered[index[index > 0] - 1]
+        fields["delta_e"].append(delta_e)
+        fields["delta_n"].append(delta_n)
+        fields["valid"].append(valid)
+        fields["naive_valid"].append(naive_valid)
+        fields["corrected_valid"].append(corrected_valid)
+        fields["target_nodata"].append(~corrected_valid)
+        fields["field_valid"].append(field_valid)
+        fields["panel_mask"].append(panel_mask)
+        fields["edge_tail_applied"].append(edge_tail_applied)
+    result = {name: np.concatenate(values) for name, values in fields.items()}
+    result.update({"grid_height": grid_height, "grid_width": grid_width,
+                   "grid_points": grid_height * grid_width})
+    return result
+
+
 def grid_mapping(visible_world: dict, field: PlanimetricField,
                  visible_transform, visible_width: int, visible_height: int,
                  thermal_transform, thermal_width: int, thermal_height: int,
                  thermal_alpha: np.ndarray, step: int,
                  field_max_distance: float | None = None,
-                 boundary=None, field_chunk_workers: int = 1) -> dict:
+                 boundary=None, field_chunk_workers: int = 1,
+                 grid_mode: str = "full") -> dict:
+    if grid_mode not in ("full", "compact", "summary"):
+        raise ValueError("unsupported grid mode: %s" % grid_mode)
+    if grid_mode == "summary":
+        return _grid_summary(visible_world, field, visible_transform,
+                             visible_width, visible_height, thermal_transform,
+                             thermal_width, thermal_height, thermal_alpha, step,
+                             field_max_distance, boundary, field_chunk_workers)
     grid_height = visible_height // step
     grid_width = visible_width // step
     if grid_height == 0 or grid_width == 0:
@@ -246,6 +343,7 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
 
     return {
         "grid_height": grid_height, "grid_width": grid_width,
+        "grid_points": len(east),
         "visible_u": column_grid.ravel(), "visible_v": row_grid.ravel(),
         "east": east, "north": north,
         "delta_e": delta_e, "delta_n": delta_n,

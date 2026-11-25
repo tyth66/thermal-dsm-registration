@@ -28,6 +28,7 @@ class MappingInputs:
     grid_step: int = 16
     field_max_distance_m: float | None = None
     field_chunk_workers: int = 2
+    grid_mode: str = "full"
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,18 @@ class MappingComputation:
     grid: Mapping[str, np.ndarray]
     summary: dict
     thermal_resolution: float
+
+
+_COMPACT_GRID_KEYS = frozenset((
+    "grid_height", "grid_width", "grid_points",
+    "east", "north", "visible_u", "visible_v",
+    "delta_e", "delta_n", "thermal_u", "thermal_v",
+    "valid", "field_valid", "panel_mask",
+))
+
+
+def _compact_grid(grid: Mapping[str, np.ndarray]) -> dict:
+    return {key: grid[key] for key in _COMPACT_GRID_KEYS if key in grid}
 
 
 def compute_mapping(inputs: MappingInputs) -> MappingComputation:
@@ -62,7 +75,8 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
             thermal_transform, thermal_ortho.width, thermal_ortho.height,
             thermal_alpha, inputs.grid_step,
             inputs.field_max_distance_m, boundary=thermal_bounds,
-            field_chunk_workers=inputs.field_chunk_workers)
+            field_chunk_workers=inputs.field_chunk_workers,
+            grid_mode=inputs.grid_mode)
         thermal_resolution = abs(thermal_ortho.transform.a)
     row_count = len(panel_rows)
     panel_order = [panel["panel_id"] for panel in inputs.visible_world["panels"]]
@@ -101,7 +115,7 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
     edge_mask = edge_distance < 40.0
     valid_grid = grid["valid"]
     panel_mask = grid["panel_mask"]
-    grid_size = len(grid["east"])
+    grid_size = int(grid.get("grid_points", len(grid.get("east", []))))
     summary = {
         "method": "visible ortho -> planimetric field -> thermal ortho",
         "visible_ortho": str(inputs.visible_ortho),
@@ -146,6 +160,12 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
             np.hypot(grid["delta_e"][valid_grid], grid["delta_n"][valid_grid])
             / thermal_resolution),
     }
+    if inputs.grid_mode == "summary":
+        grid = {"grid_height": int(grid.get("grid_height", 0)),
+                "grid_width": int(grid.get("grid_width", 0)),
+                "grid_points": grid_size, "summary_only": True}
+    elif inputs.grid_mode == "compact":
+        grid = _compact_grid(grid)
     return MappingComputation(panel_rows=tuple(panel_rows), grid=grid,
                               summary=summary, thermal_resolution=thermal_resolution)
 

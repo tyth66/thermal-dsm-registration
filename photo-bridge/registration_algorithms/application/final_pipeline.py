@@ -69,16 +69,20 @@ def planimetric_provenance(result) -> dict:
 def run_final_pipeline(inputs: FinalPipelineInputs) -> FinalPipelineResult:
     stages: list[dict] = []
     planimetric = estimate_planimetric(inputs.planimetric)
+    provenance = planimetric_provenance(planimetric)
+    field = planimetric.field
+    del planimetric
     stages.append({"stage": "planimetric_residual", "in_memory": True})
     computation = compute_mapping(MappingInputs(
         visible_world=inputs.world,
-        field=planimetric.field,
+        field=field,
         visible_ortho=inputs.visible_ortho,
         thermal_ortho=inputs.thermal_ortho,
         residual_model_path=Path("in_memory"),
         grid_step=inputs.grid_step,
+        grid_mode="summary",
     ))
-    computation.summary["planimetric"] = planimetric_provenance(planimetric)
+    computation.summary["planimetric"] = provenance
     computation.summary["outputs"] = [str(inputs.output_json)]
     computation.summary["residual_model"] = "in_memory"
     write_json(inputs.output_json, mapping_result_payload(computation),

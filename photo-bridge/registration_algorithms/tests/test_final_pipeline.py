@@ -106,6 +106,7 @@ def test_final_pipeline_runs_two_stages_in_memory(monkeypatch, tmp_path):
     # Mapping consumes the planimetric field directly; no vertical/canonical
     # stage and no DSM path plumbing survives on the final-pipeline inputs.
     assert captured["mapping"].field is estimation.field
+    assert captured["mapping"].grid_mode == "summary"
     assert not hasattr(captured["mapping"], "canonical")
     assert not hasattr(module.FinalPipelineInputs(
         world={}, planimetric=object(), visible_ortho=tmp_path / "v.tif",

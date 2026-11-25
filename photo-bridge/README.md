@@ -28,6 +28,16 @@ result = estimate_planimetric(PlanimetricInputs(
 
 For the full panel-mapping pipeline, use `run_final_pipeline`.
 
+`MappingInputs.grid_mode` controls the in-memory grid payload:
+
+- `full`: all mapping arrays (default, diagnostics);
+- `compact`: core coordinates and validity arrays;
+- `summary`: no full grid arrays; the delivered payload uses scalar grid
+  statistics only.
+
+The production final pipeline uses `summary` because the JSON payload does not
+read the grid arrays.
+
 ## Research API
 
 ```python
