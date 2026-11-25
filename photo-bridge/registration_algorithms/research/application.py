@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..application.mapping import (
+    MappingComputation, MappingInputs, compute_mapping,
+)
 from ..application.planimetric import (
     TilingPlan, prepare_planimetric_inputs,
 )
@@ -73,6 +76,36 @@ def _validate(inputs: ResearchPlanimetricInputs) -> None:
         raise ValueError("sigma_bounds must be positive and increasing")
     if not inputs.temperature_schedule:
         raise ValueError("temperature_schedule must not be empty")
+
+
+@dataclass(frozen=True)
+class ResearchPipelineInputs:
+    planimetric: ResearchPlanimetricInputs
+    visible_ortho: Path
+    thermal_ortho: Path
+    grid_step: int = 16
+    field_max_distance_m: float | None = None
+
+
+@dataclass(frozen=True)
+class ResearchPipelineResult:
+    planimetric: ResearchPlanimetricResult
+    mapping: MappingComputation
+
+
+def run_research_pipeline(inputs: ResearchPipelineInputs) -> ResearchPipelineResult:
+    """Run research field estimation and in-memory panel/grid mapping."""
+    planimetric = estimate_research_planimetric(inputs.planimetric)
+    mapping = compute_mapping(MappingInputs(
+        visible_world=inputs.planimetric.visible_world,
+        field=planimetric.field,
+        visible_ortho=inputs.visible_ortho,
+        thermal_ortho=inputs.thermal_ortho,
+        residual_model_path=Path("in_memory"),
+        grid_step=inputs.grid_step,
+        field_max_distance_m=inputs.field_max_distance_m,
+    ))
+    return ResearchPipelineResult(planimetric=planimetric, mapping=mapping)
 
 
 def estimate_research_planimetric(

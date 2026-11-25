@@ -43,7 +43,9 @@ result = estimate_research_planimetric(ResearchPlanimetricInputs(
 ```
 
 The research API returns the field, inliers, panel components, EM history,
-responsibilities and posterior diagnostics. It is planimetric-level only.
+responsibilities and posterior diagnostics. For in-memory panel/grid mapping,
+use `run_research_pipeline`, which adds the production mapping layer without
+writing a final JSON.
 
 ## Package boundary
 

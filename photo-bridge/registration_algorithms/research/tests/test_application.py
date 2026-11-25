@@ -7,7 +7,7 @@ from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
 from registration_algorithms.research import (
-    ResearchPlanimetricInputs, estimate_research_planimetric,
+    ResearchPipelineInputs, ResearchPlanimetricInputs, run_research_pipeline,
 )
 
 
@@ -27,6 +27,23 @@ def test_research_end_to_end_from_dsm_paths(tmp_path):
                 width=array.shape[1], count=1, dtype="float32",
                 crs=crs, transform=transform) as dataset:
             dataset.write(array, 1)
+    visible_ortho = tmp_path / "visible_ortho.tif"
+    thermal_ortho = tmp_path / "thermal_ortho.tif"
+    with rasterio.open(
+            visible_ortho, "w", driver="GTiff", height=visible.shape[0],
+            width=visible.shape[1], count=3, dtype="uint8",
+            crs=crs, transform=transform) as dataset:
+        dataset.write(np.zeros(visible.shape, np.uint8), 1)
+        dataset.write(np.zeros(visible.shape, np.uint8), 2)
+        dataset.write(np.zeros(visible.shape, np.uint8), 3)
+    with rasterio.open(
+            thermal_ortho, "w", driver="GTiff", height=thermal.shape[0],
+            width=thermal.shape[1], count=4, dtype="uint8",
+            crs=crs, transform=transform) as dataset:
+        for band in range(1, 5):
+            values = (np.ones(thermal.shape, np.uint8) * 255
+                      if band == 4 else np.zeros(thermal.shape, np.uint8))
+            dataset.write(values, band)
     inputs = ResearchPlanimetricInputs(
         visible_dsm=visible_path,
         thermal_dsm=thermal_path,
@@ -36,10 +53,17 @@ def test_research_end_to_end_from_dsm_paths(tmp_path):
         max_iterations=2,
         sigma_prior_m=0.2,
     )
-    result = estimate_research_planimetric(inputs)
-    assert result.records
-    assert result.inliers
-    assert len(result.history) == 2
-    assert result.sigma_f_m > 0.0
-    assert np.isfinite(result.field.translation).all()
-    assert 0.0 < result.tiling.tile_m <= 4.0
+    result = run_research_pipeline(ResearchPipelineInputs(
+        planimetric=inputs,
+        visible_ortho=visible_ortho,
+        thermal_ortho=thermal_ortho,
+        grid_step=16,
+    ))
+    assert result.planimetric.records
+    assert result.planimetric.inliers
+    assert len(result.planimetric.history) == 2
+    assert result.planimetric.sigma_f_m > 0.0
+    assert np.isfinite(result.planimetric.field.translation).all()
+    assert 0.0 < result.planimetric.tiling.tile_m <= 4.0
+    assert result.mapping.grid["east"].size > 0
+    assert result.mapping.summary["method"].startswith("visible ortho")

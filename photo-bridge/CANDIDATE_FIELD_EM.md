@@ -340,6 +340,30 @@ DSM 读取 / 公共网格
 
 `dsm_covariance=True` 时使用 `research.dsm_covariance.dsm_candidate_covariance` 回调；生产入口不导入该包。
 
+### 完整内存映射
+
+需要继续做 panel/grid 映射时，使用：
+
+```python
+from registration_algorithms.research import (
+    ResearchPipelineInputs, run_research_pipeline,
+)
+
+pipeline = run_research_pipeline(ResearchPipelineInputs(
+    planimetric=inputs,
+    visible_ortho="visible_ortho.tif",
+    thermal_ortho="thermal_ortho.tif",
+    grid_step=16,
+))
+
+pipeline.planimetric.field
+pipeline.mapping.panel_rows
+pipeline.mapping.grid
+pipeline.mapping.summary
+```
+
+`run_research_pipeline` 不写 JSON，全部在内存中返回。
+
 ## 13. 当前数值状态
 
 以下结果是研究原型，不是生产验收：

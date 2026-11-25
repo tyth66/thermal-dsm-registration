@@ -6,9 +6,12 @@ the parent package.
 """
 
 __all__ = [
+    "ResearchPipelineInputs",
+    "ResearchPipelineResult",
     "ResearchPlanimetricInputs",
     "ResearchPlanimetricResult",
     "estimate_research_planimetric",
+    "run_research_pipeline",
 ]
 
 
