@@ -99,11 +99,14 @@ def prepare_planimetric_inputs(visible_dsm, thermal_dsm, *, resolution_m: float,
     visible_z, visible_valid, thermal_z, thermal_valid, transform, _ = load_grid(
         visible_dsm, thermal_dsm, resolution_m, warp_threads)
     joint = visible_valid & thermal_valid
+    visible_z[~visible_valid] = 0.0
+    thermal_z[~thermal_valid] = 0.0
+    del visible_valid, thermal_valid
     overlap_height_m = joint.shape[0] * resolution_m
     overlap_width_m = joint.shape[1] * resolution_m
     return PlanimetricPreparation(
-        visible_values=np.where(visible_valid, visible_z, 0.0).astype(np.float32),
-        thermal_values=np.where(thermal_valid, thermal_z, 0.0).astype(np.float32),
+        visible_values=visible_z,
+        thermal_values=thermal_z,
         joint=joint,
         transform=transform,
         overlap_extent_m=(overlap_width_m, overlap_height_m),
