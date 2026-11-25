@@ -64,22 +64,41 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
             inputs.field_max_distance_m, boundary=thermal_bounds,
             field_chunk_workers=inputs.field_chunk_workers)
         thermal_resolution = abs(thermal_ortho.transform.a)
-    panel_grouped = {}
-    for row in panel_rows:
-        panel_grouped.setdefault(row["panel_id"], []).append(row)
-    valid_panel = [row for row in panel_rows if row["valid"]]
-    fully_valid_panel_ids = {panel_id for panel_id, rows in panel_grouped.items()
-                             if len(rows) == 5 and all(row["valid"] for row in rows)}
-    conservative_panel = [row for row in panel_rows if row.get("conservative_valid")]
-    conservative_panel_ids = {
-        panel_id for panel_id, rows in panel_grouped.items()
-        if len(rows) == 5
-        and any(int(row.get("component_conservative_valid", 0)) for row in rows)}
-    all_original_nodata_panel_ids = {
-        panel_id for panel_id, rows in panel_grouped.items()
-        if len(rows) == 5 and not any(row["naive_valid"] for row in rows)
-    }
-    edge_rows = [row for row in panel_rows if row["edge_distance_m"] < 40.0]
+    row_count = len(panel_rows)
+    panel_order = [panel["panel_id"] for panel in inputs.visible_world["panels"]]
+    panel_index = {panel_id: index for index, panel_id in enumerate(panel_order)}
+
+    def column(key, dtype):
+        return np.fromiter((row[key] for row in panel_rows), dtype=dtype,
+                           count=row_count)
+
+    codes = np.fromiter((panel_index[row["panel_id"]] for row in panel_rows),
+                        dtype=np.int64, count=row_count)
+    valid = column("valid", bool)
+    naive_valid = column("naive_valid", bool)
+    corrected_valid = column("corrected_valid", bool)
+    field_valid = column("field_valid", bool)
+    conservative_valid = np.fromiter(
+        (row.get("conservative_valid", 0) for row in panel_rows),
+        dtype=bool, count=row_count)
+    component_conservative = np.fromiter(
+        (row.get("component_conservative_valid", 0) for row in panel_rows),
+        dtype=bool, count=row_count)
+    edge_distance = column("edge_distance_m", float)
+    edge_tail = column("edge_tail_applied", bool)
+    panel_count = len(panel_order)
+    counts = np.bincount(codes, minlength=panel_count)
+    valid_counts = np.bincount(codes, weights=valid, minlength=panel_count)
+    conservative_counts = np.bincount(
+        codes, weights=component_conservative, minlength=panel_count)
+    naive_counts = np.bincount(codes, weights=naive_valid, minlength=panel_count)
+    fully_valid_panel_ids = np.flatnonzero(
+        (counts == 5) & (valid_counts == 5))
+    conservative_panel_ids = np.flatnonzero(
+        (counts == 5) & (conservative_counts > 0))
+    all_original_nodata_panel_ids = np.flatnonzero(
+        (counts == 5) & (naive_counts == 0))
+    edge_mask = edge_distance < 40.0
     valid_grid = grid["valid"]
     panel_mask = grid["panel_mask"]
     grid_size = len(grid["east"])
@@ -92,17 +111,17 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         "grid_points": int(grid_size),
         "panel_points": len(panel_rows),
         "panels_total": len(inputs.visible_world["panels"]),
-        "panel_points_valid": len(valid_panel),
-        "panel_points_conservative_valid": len(conservative_panel),
-        "panel_points_corrected_valid": sum(row["corrected_valid"] for row in panel_rows),
-        "panel_points_unsupported": sum(not row["field_valid"] for row in panel_rows),
-        "panel_points_target_nodata": sum(1 - row["corrected_valid"] for row in panel_rows),
+        "panel_points_valid": int(valid.sum()),
+        "panel_points_conservative_valid": int(conservative_valid.sum()),
+        "panel_points_corrected_valid": int(corrected_valid.sum()),
+        "panel_points_unsupported": int((~field_valid).sum()),
+        "panel_points_target_nodata": int((~corrected_valid).sum()),
         "panel_ids_valid": len(fully_valid_panel_ids),
         "panel_ids_conservative_valid": len(conservative_panel_ids),
         "panel_ids_all_original_nodata": len(all_original_nodata_panel_ids),
-        "panel_ids_incomplete": sum(len(rows) != 5 for rows in panel_grouped.values()),
+        "panel_ids_incomplete": int(np.count_nonzero(counts != 5)),
         "edge_band_m": 2.0 * float(getattr(field, "tile_m", 20.0)),
-        "edge_tail_points": int(sum(row["edge_tail_applied"] for row in edge_rows)),
+        "edge_tail_points": int(edge_tail[edge_mask].sum()),
         "grid_edge_tail_points": int(np.count_nonzero(grid.get("edge_tail_applied", []))),
         "field_max_distance_m": (field.max_distance_m if inputs.field_max_distance_m is None
                                  else inputs.field_max_distance_m),
@@ -119,8 +138,8 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         "grid_target_nodata_points": int(grid["target_nodata"].sum()),
         "grid_field_fraction": float(grid["field_valid"].mean()),
         "grid_panel_fraction": float(panel_mask.mean()),
-        "panel_field_shift_px": stats([row["field_shift_px"] for row in valid_panel]),
-        "panel_residual_applied_count": sum(row["residual_applied"] for row in panel_rows),
+        "panel_field_shift_px": stats(column("field_shift_px", float)[valid]),
+        "panel_residual_applied_count": int(column("residual_applied", int).sum()),
         "delta_e_m": stats(grid["delta_e"]),
         "delta_n_m": stats(grid["delta_n"]),
         "grid_field_shift_px": stats(

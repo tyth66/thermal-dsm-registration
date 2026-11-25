@@ -166,8 +166,13 @@ def _subpixel(ecc: np.ndarray, iy: int, ix: int) -> tuple[float, float]:
     return float(np.clip(dx, -0.5, 0.5)), float(np.clip(dy, -0.5, 0.5))
 
 
-def masked_ecc_peaks(ecc: np.ndarray, nms_px: int = DEFAULT_NMS_PX):
-    """Return local peak indices/scores/order for a cached ECC surface."""
+def masked_ecc_peaks(ecc: np.ndarray, nms_px: int = DEFAULT_NMS_PX,
+                    limit: int = 256):
+    """Return local peak indices/scores/order for a cached ECC surface.
+
+    ``limit`` keeps only the strongest candidates before the sequential NMS;
+    the production top-5/top-1 paths cannot use more than this.
+    """
     valid = np.isfinite(ecc)
     if not np.any(valid):
         return np.empty((0, 2), int), np.empty(0, float), np.empty(0, int)
@@ -175,13 +180,16 @@ def masked_ecc_peaks(ecc: np.ndarray, nms_px: int = DEFAULT_NMS_PX):
     kernel = np.ones((2 * nms_px + 1, 2 * nms_px + 1), np.uint8)
     local_max = cv2.dilate(surface, kernel, borderType=cv2.BORDER_CONSTANT,
                            borderValue=-np.inf)
-    peak_indices = np.argwhere(valid & (surface >= local_max - 1e-12))
-    if len(peak_indices) == 0:
-        iy, ix = np.unravel_index(np.nanargmax(ecc), ecc.shape)
-        peak_indices = np.array([[iy, ix]])
-    scores = ecc[peak_indices[:, 0], peak_indices[:, 1]]
+    flat = np.flatnonzero(valid & (surface >= local_max - 1e-12))
+    if len(flat) == 0:
+        flat = np.array([np.nanargmax(ecc)])
+    scores = ecc.ravel()[flat]
+    if len(flat) > limit:
+        keep = np.argpartition(scores, -limit)[-limit:]
+        flat = flat[keep]
+        scores = scores[keep]
     order = np.argsort(scores)[::-1]
-    return peak_indices, scores, order
+    return np.column_stack(np.unravel_index(flat, ecc.shape)), scores[order], order
 
 
 def masked_ecc_candidates(visible: np.ndarray, thermal: np.ndarray,
