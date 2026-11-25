@@ -102,6 +102,7 @@ def run_research_pipeline(inputs: ResearchPipelineInputs) -> ResearchPipelineRes
         field=planimetric.field,
         visible_ortho=inputs.visible_ortho,
         thermal_ortho=inputs.thermal_ortho,
+        thermal_dsm=inputs.planimetric.thermal_dsm,
         residual_model_path=Path("in_memory"),
         grid_step=inputs.grid_step,
         field_max_distance_m=inputs.field_max_distance_m,

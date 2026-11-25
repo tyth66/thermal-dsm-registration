@@ -27,9 +27,10 @@ result = estimate_planimetric(PlanimetricInputs(
 ```
 
 For the full panel-mapping pipeline, use `run_final_pipeline`.
-Production coverage uses valid elevations in the native thermal DSM. A panel
-is covered when any of its five original sample positions has a valid value.
-The projected coordinates still use the thermal orthophoto pixel frame.
+Production and research-pipeline coverage use valid elevations in the native
+thermal DSM. A panel is covered when any of its five original sample positions
+has a valid value. The projected coordinates still use the thermal orthophoto
+pixel frame.
 
 `MappingInputs.grid_mode` controls the in-memory grid payload:
 

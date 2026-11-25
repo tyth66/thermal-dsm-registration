@@ -68,3 +68,4 @@ def test_research_end_to_end_from_dsm_paths(tmp_path):
     assert result.mapping.grid["grid_points"] > 0
     assert result.mapping.grid["summary_only"] is True
     assert result.mapping.summary["method"].startswith("visible ortho")
+    assert "thermal DSM elevation" in result.mapping.summary["mapping_policy"]
