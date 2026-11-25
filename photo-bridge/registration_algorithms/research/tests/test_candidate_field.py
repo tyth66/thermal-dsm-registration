@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from registration_algorithms.candidate_field_em import (
+from registration_algorithms.research.candidate_field import (
     candidate_log_likelihood, candidate_responsibilities,
     estimate_sigma_f, field_posterior_uncertainty, fit_candidate_field_em,
     predict_displacement_covariance,

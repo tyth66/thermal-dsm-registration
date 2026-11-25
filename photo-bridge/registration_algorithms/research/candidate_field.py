@@ -19,7 +19,7 @@ from scipy.optimize import minimize_scalar
 from scipy.special import expit, logsumexp
 from scipy.spatial import cKDTree
 
-from .residual_model import RegularizedPlanimetricField, fit_regularized_field
+from ..residual_model import RegularizedPlanimetricField, fit_regularized_field
 
 CANDIDATE_CORE_FLOOR_M = 0.05
 AMBIGUITY_MASS_MIN = 0.73

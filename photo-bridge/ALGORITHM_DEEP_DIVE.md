@@ -967,7 +967,7 @@ direct vs algorithm mean distance=0.4424 m, P95=0.7691 m
 | `registration_algorithms/dsm_registration.py` | 公共网格、单 tile 观测、位移域、边界 tile |
 | `registration_algorithms/masked_ecc.py` | FFT 相关、masked NCC、亚像素、周期估计 |
 | `registration_algorithms/residual_model.py` | 相似 IRLS、RBF、支撑、求值 |
-| `registration_algorithms/candidate_field_em.py` | 全原始候选联合原型：两层 E 步、精确 W/h M 步、σ_f MLE、后验曲率 |
+| `registration_algorithms/research/candidate_field.py` | 全原始候选联合原型：两层 E 步、精确 W/h M 步、σ_f MLE、后验曲率 |
 | `registration_algorithms/boundary_field.py` | 边界局部残差模型 |
 | `registration_algorithms/forward_mapping.py` | 面板/grid 映射、三态有效性 |
 | `registration_algorithms/application/mapping.py` | 映射用例、summary、payload |
@@ -977,7 +977,7 @@ direct vs algorithm mean distance=0.4424 m, P95=0.7691 m
 
 ### 7.4 全原始候选联合研究原型
 
-完整数学推导见 [CANDIDATE_FIELD_EM.md](CANDIDATE_FIELD_EM.md)。
+完整数学推导见 [CANDIDATE_FIELD_EM.md](CANDIDATE_FIELD_EM.md)。研究代码集中在 `registration_algorithms/research/`，生产入口不导入该包。
 
 该原型保留所有 tile 的原始 ECC 候选，使用：
 

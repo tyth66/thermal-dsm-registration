@@ -125,7 +125,7 @@ def _register_tile(visible, thermal, joint, transform, resolution,
                    tile: int, row: int, column: int, top: int, left: int,
                    prior_radius_m: float = 2.0,
                    min_valid_fraction: float = 0.5,
-                   dsm_covariance: bool = False):
+                   covariance_fn=None):
     """Register one tile and return it as an observation.
 
     The ECC search is computed over the candidate-dependent common mask, not
@@ -157,7 +157,7 @@ def _register_tile(visible, thermal, joint, transform, resolution,
 
     forward = masked_ecc_candidates(
         first, second, mask, resolution, top_k=5,
-        prior=prior, radius_px=radius_px, dsm_covariance=dsm_covariance)
+        prior=prior, radius_px=radius_px, covariance_fn=covariance_fn)
     if not forward:
         return None
     global_forward = masked_ecc_candidates(
@@ -504,7 +504,7 @@ def _edge_tasks(height, width, tile, step, pad):
 def register(visible, thermal, joint, transform, resolution,
              tile_m: float, step_m: float, workers: int = 1,
              prior_radius_m: float = 2.0, include_boundary: bool = False,
-             apply_domain: bool = True, dsm_covariance: bool = False):
+             apply_domain: bool = True, covariance_fn=None):
     tile = int(round(tile_m / resolution))
     step = int(round(step_m / resolution))
     height, width = joint.shape
@@ -524,7 +524,7 @@ def register(visible, thermal, joint, transform, resolution,
         return _register_tile(visible, thermal, joint, transform,
                               resolution, tile, row, column, top, left,
                               prior_radius_m=prior_radius_m,
-                              dsm_covariance=dsm_covariance)
+                              covariance_fn=covariance_fn)
     workers = max(1, int(workers))
     if workers > 1 and len(tasks) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -540,7 +540,7 @@ def register(visible, thermal, joint, transform, resolution,
                     visible, thermal, joint, transform, resolution,
                     tile, 0, 0, task["top"], task["left"],
                     prior_radius_m=prior_radius_m, min_valid_fraction=0.50,
-                    dsm_covariance=dsm_covariance)
+                    covariance_fn=covariance_fn)
                 if record is None:
                     return None
                 sample = transform * (task["sample_x"] + 0.5,
@@ -573,7 +573,7 @@ def register(visible, thermal, joint, transform, resolution,
                     padded_visible, padded_thermal, padded_joint,
                     padded_transform, resolution, tile, 0, 0, top, left,
                     prior_radius_m=prior_radius_m, min_valid_fraction=0.25,
-                    dsm_covariance=dsm_covariance)
+                    covariance_fn=covariance_fn)
             if workers > 1 and len(edge_tasks) > 1:
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     edge_results = list(pool.map(process_edge, edge_tasks))

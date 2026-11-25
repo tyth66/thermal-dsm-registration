@@ -190,7 +190,7 @@ GLS 相对旧标量场的面板中心位移：mean 0.0174 m，P95 0.0496 m，max
 
 ## 8.1 研究原型：全原始候选联合
 
-[candidate_field_em.py](registration_algorithms/candidate_field_em.py) 另有一条**未进入生产**的全原始候选联合路径：
+`registration_algorithms/research/` 包另有一条**未进入生产**的全原始候选联合路径（`research/candidate_field.py`）：
 
 - 保留每个 tile 的全部 ECC 候选；
 - tile 级 outlier 质量 \(m_i\) 与候选竞争 \(w_{ij}\) 分层；
@@ -200,7 +200,7 @@ GLS 相对旧标量场的面板中心位移：mean 0.0174 m，P95 0.0496 m，max
 - 可选 DSM profile 协方差；
 - 输出后验曲率、\(\Sigma_f\)、熵分解。
 
-完整推导、实验状态和限制见 [CANDIDATE_FIELD_EM.md](CANDIDATE_FIELD_EM.md)。当前精确 M 步和 DSM 协方差在 296 上的 panel 差异仍大于 Moment 诊断，未完成生产标定。
+完整推导、实验状态和限制见 [CANDIDATE_FIELD_EM.md](CANDIDATE_FIELD_EM.md)。`registration_algorithms/research/` 不被生产入口导入，生产只通过 `register(..., apply_domain=False)` 和可选 `covariance_fn` 暴露原始观测接口。当前精确 M 步和 DSM 协方差在 296 上的 panel 差异仍大于 Moment 诊断，未完成生产标定。
 
 ## 9. 已知限制
 

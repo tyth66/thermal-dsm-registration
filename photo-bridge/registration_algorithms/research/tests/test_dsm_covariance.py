@@ -5,9 +5,10 @@ import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter, shift as ndi_shift
 
-from registration_algorithms.masked_ecc import (
+from registration_algorithms.masked_ecc import masked_ecc_candidates
+from registration_algorithms.research.dsm_covariance import (
     DSM_COVARIANCE_MAX_PX2, DSM_COVARIANCE_MIN_PX2,
-    masked_ecc_candidates,
+    dsm_candidate_covariance,
 )
 
 
@@ -27,7 +28,7 @@ def test_dsm_profile_covariance_is_positive_and_physical():
     joint = np.ones_like(visible, bool)
     candidates = masked_ecc_candidates(
         visible, thermal, joint, resolution_m=0.1, top_k=1,
-        dsm_covariance=True)
+        covariance_fn=dsm_candidate_covariance)
     assert candidates
     candidate = candidates[0]
     assert candidate["sx"] == pytest.approx(3.0, abs=0.2)
