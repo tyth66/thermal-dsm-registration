@@ -1,6 +1,7 @@
 """Planimetric field: global similarity + regularized RBF residual."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable
 
 import numpy as np
@@ -434,44 +435,50 @@ class RegularizedPlanimetricField(PlanimetricField):
             "nearest_m": nearest,
         }
 
-    def evaluate(self, east, north):
+    def evaluate(self, east, north, workers: int = 1):
         east = np.asarray(east, float)
         north = np.asarray(north, float)
-        if len(east) <= self.EVALUATION_CHUNK:
-            dx, dy, weight_sum = self._evaluate_chunk(east, north)
-        else:
-            dx = np.empty(len(east), float)
-            dy = np.empty(len(east), float)
-            weight_sum = np.empty(len(east), float)
-            for start in range(0, len(east), self.EVALUATION_CHUNK):
-                stop = start + self.EVALUATION_CHUNK
-                dx[start:stop], dy[start:stop], weight_sum[start:stop] = (
-                    self._evaluate_chunk(east[start:stop], north[start:stop]))
+        dx, dy, weight_sum = self._evaluate_chunks(east, north, workers)
         if self.tree is None:
             nearest = np.full(len(east), np.inf)
         else:
             nearest, _ = self.tree.query(np.column_stack([east, north]), k=1)
         return dx, dy, weight_sum, nearest
 
-    def evaluate_with_support(self, east, north):
+    def evaluate_with_support(self, east, north, workers: int = 1):
         """Evaluate displacement and support confidence in one kernel pass."""
         east = np.asarray(east, float)
         north = np.asarray(north, float)
         size = len(east)
-        dx = np.empty(size, float)
-        dy = np.empty(size, float)
-        weight_sum = np.empty(size, float)
-        support = np.empty(size, float)
-        for start in range(0, size, self.EVALUATION_CHUNK):
-            stop = start + self.EVALUATION_CHUNK
-            dx[start:stop], dy[start:stop], weight_sum[start:stop], support[start:stop] = (
-                self._evaluate_chunk(east[start:stop], north[start:stop],
-                                     include_support=True))
+        dx, dy, weight_sum, support = self._evaluate_chunks(
+            east, north, workers, include_support=True)
         if self.tree is None:
             nearest = np.full(size, np.inf)
         else:
             nearest, _ = self.tree.query(np.column_stack([east, north]), k=1)
         return dx, dy, weight_sum, nearest, support
+
+    def _evaluate_chunks(self, east, north, workers: int,
+                         include_support: bool = False):
+        size = len(east)
+        if workers <= 1 or size <= self.EVALUATION_CHUNK:
+            return self._evaluate_chunk(east, north, include_support)
+        bounds = [(start, min(start + self.EVALUATION_CHUNK, size))
+                  for start in range(0, size, self.EVALUATION_CHUNK)]
+
+        def run(bound):
+            start, stop = bound
+            return self._evaluate_chunk(east[start:stop], north[start:stop],
+                                        include_support)
+
+        with ThreadPoolExecutor(max_workers=min(workers, len(bounds))) as pool:
+            results = list(pool.map(run, bounds))
+        width = 4 if include_support else 3
+        outputs = [np.empty(size, float) for _ in range(width)]
+        for (start, stop), values in zip(bounds, results):
+            for index, value in enumerate(values):
+                outputs[index][start:stop] = value
+        return tuple(outputs)
 
     def _evaluate_chunk(self, east, north, include_support=False):
         points = np.column_stack([np.asarray(east, float), np.asarray(north, float)])

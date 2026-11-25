@@ -14,9 +14,9 @@ from .boundary_field import evaluate_boundary_field
 from .residual_model import PlanimetricField, field_support_mask
 
 
-def _evaluate_with_support(field, east, north):
+def _evaluate_with_support(field, east, north, workers: int = 1):
     if hasattr(field, "evaluate_with_support"):
-        return field.evaluate_with_support(east, north)
+        return field.evaluate_with_support(east, north, workers=workers)
     delta_e, delta_n, weight, nearest = field.evaluate(east, north)
     support = (field.support_confidence(east, north)
                if hasattr(field, "support_confidence")
@@ -58,7 +58,7 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                  thermal_width: int, thermal_height: int,
                  thermal_alpha: np.ndarray,
                  field_max_distance: float | None = None,
-                 boundary=None) -> list[dict]:
+                 boundary=None, field_chunk_workers: int = 1) -> list[dict]:
     visible_inverse = ~visible_transform
     thermal_inverse = ~thermal_transform
     entries = []
@@ -77,7 +77,7 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     east = np.asarray([entry["east"] for entry in entries], float)
     north = np.asarray([entry["north"] for entry in entries], float)
     delta_e, delta_n, weight, nearest, support_confidence = (
-        _evaluate_with_support(field, east, north))
+        _evaluate_with_support(field, east, north, field_chunk_workers))
     edge_distance = np.full(len(east), np.inf, float)
     edge_tail_applied = np.zeros(len(east), bool)
     if boundary is not None:
@@ -170,7 +170,7 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
                  thermal_transform, thermal_width: int, thermal_height: int,
                  thermal_alpha: np.ndarray, step: int,
                  field_max_distance: float | None = None,
-                 boundary=None) -> dict:
+                 boundary=None, field_chunk_workers: int = 1) -> dict:
     grid_height = visible_height // step
     grid_width = visible_width // step
     if grid_height == 0 or grid_width == 0:
@@ -191,7 +191,7 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
         cv2.fillPoly(mask, [polygon], panel_index[panel_id])
     panel_index_grid = mask.ravel()
     delta_e, delta_n, weight, nearest, support_confidence = (
-        _evaluate_with_support(field, east, north))
+        _evaluate_with_support(field, east, north, field_chunk_workers))
     edge_distance = np.full(len(east), np.inf, float)
     edge_tail_applied = np.zeros(len(east), bool)
     if boundary is not None:

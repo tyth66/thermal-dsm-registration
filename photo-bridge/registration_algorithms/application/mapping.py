@@ -27,6 +27,7 @@ class MappingInputs:
     residual_model_path: Path
     grid_step: int = 16
     field_max_distance_m: float | None = None
+    field_chunk_workers: int = 2
 
 
 @dataclass(frozen=True)
@@ -53,13 +54,15 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
             inputs.visible_world, field, visible_ortho.transform,
             thermal_transform, thermal_ortho.width, thermal_ortho.height,
             thermal_alpha, inputs.field_max_distance_m,
-            boundary=thermal_bounds)
+            boundary=thermal_bounds,
+            field_chunk_workers=inputs.field_chunk_workers)
         grid = grid_mapping(
             inputs.visible_world, field, visible_ortho.transform,
             visible_ortho.width, visible_ortho.height,
             thermal_transform, thermal_ortho.width, thermal_ortho.height,
             thermal_alpha, inputs.grid_step,
-            inputs.field_max_distance_m, boundary=thermal_bounds)
+            inputs.field_max_distance_m, boundary=thermal_bounds,
+            field_chunk_workers=inputs.field_chunk_workers)
         thermal_resolution = abs(thermal_ortho.transform.a)
     panel_grouped = {}
     for row in panel_rows:

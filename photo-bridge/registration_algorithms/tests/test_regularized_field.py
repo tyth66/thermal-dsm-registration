@@ -86,6 +86,19 @@ def test_evaluate_with_support_matches_separate_passes():
     np.testing.assert_allclose(fused[4], support)
 
 
+def test_parallel_chunk_evaluation_matches_serial():
+    rows, _, _ = _rows()
+    field = fit_regularized_field(
+        rows, tile_m=10.0, max_distance_m=100.0,
+        kernel_length_m=20.0, ridge=1e-6)
+    east = np.linspace(596000.0, 596080.0, 120_000)
+    north = np.linspace(3234000.0, 3234060.0, 120_000)
+    serial = field.evaluate_with_support(east, north, workers=1)
+    parallel = field.evaluate_with_support(east, north, workers=2)
+    for left, right in zip(serial, parallel):
+        np.testing.assert_allclose(left, right)
+
+
 def test_regularized_residual_does_not_extrapolate_to_unbounded_shift():
     rows, _, _ = _rows()
     field = fit_regularized_field(
