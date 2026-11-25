@@ -81,6 +81,40 @@ class FieldSupportPlan:
 
 
 @dataclass(frozen=True)
+class PlanimetricPreparation:
+    visible_values: np.ndarray
+    thermal_values: np.ndarray
+    joint: np.ndarray
+    transform: Any
+    overlap_extent_m: tuple[float, float]
+    tiling: TilingPlan
+    field_support: FieldSupportPlan
+
+
+def prepare_planimetric_inputs(visible_dsm, thermal_dsm, *, resolution_m: float,
+                               tile_m: float, step_m: float,
+                               field_max_distance_m: float,
+                               warp_threads: int) -> PlanimetricPreparation:
+    """Load both DSMs onto one grid and derive the shared tile plan."""
+    visible_z, visible_valid, thermal_z, thermal_valid, transform, _ = load_grid(
+        visible_dsm, thermal_dsm, resolution_m, warp_threads)
+    joint = visible_valid & thermal_valid
+    overlap_height_m = joint.shape[0] * resolution_m
+    overlap_width_m = joint.shape[1] * resolution_m
+    return PlanimetricPreparation(
+        visible_values=np.where(visible_valid, visible_z, 0.0).astype(np.float32),
+        thermal_values=np.where(thermal_valid, thermal_z, 0.0).astype(np.float32),
+        joint=joint,
+        transform=transform,
+        overlap_extent_m=(overlap_width_m, overlap_height_m),
+        tiling=adaptive_tiling(overlap_width_m, overlap_height_m,
+                               resolution_m, tile_m, step_m),
+        field_support=adaptive_field_support(
+            overlap_width_m, overlap_height_m, field_max_distance_m),
+    )
+
+
+@dataclass(frozen=True)
 class PlanimetricResult:
     field: PlanimetricField
     records: tuple[dict, ...]
@@ -156,18 +190,20 @@ def adaptive_tiling(overlap_width_m: float, overlap_height_m: float,
 def estimate_planimetric(inputs: PlanimetricInputs) -> PlanimetricResult:
     validate_planimetric_inputs(inputs)
     resolution = inputs.resolution_m
-    visible_z, visible_valid, thermal_z, thermal_valid, transform, _ = load_grid(
-        inputs.visible_dsm, inputs.thermal_dsm, resolution, inputs.warp_threads)
-    joint = visible_valid & thermal_valid
-    overlap_height_m = joint.shape[0] * resolution
-    overlap_width_m = joint.shape[1] * resolution
-    field_support = adaptive_field_support(
-        overlap_width_m, overlap_height_m, inputs.field_max_distance_m)
-    plan = adaptive_tiling(overlap_width_m, overlap_height_m, resolution,
-                           inputs.tile_m, inputs.step_m)
+    prepared = prepare_planimetric_inputs(
+        inputs.visible_dsm, inputs.thermal_dsm,
+        resolution_m=resolution, tile_m=inputs.tile_m,
+        step_m=inputs.step_m,
+        field_max_distance_m=inputs.field_max_distance_m,
+        warp_threads=inputs.warp_threads)
+    joint = prepared.joint
+    transform = prepared.transform
+    plan = prepared.tiling
+    field_support = prepared.field_support
+    overlap_width_m, overlap_height_m = prepared.overlap_extent_m
+    visible_values = prepared.visible_values
+    thermal_values = prepared.thermal_values
     maximum_attempts = MAXIMUM_TILING_ATTEMPTS
-    visible_values = np.where(visible_valid, visible_z, 0.0).astype(np.float32)
-    thermal_values = np.where(thermal_valid, thermal_z, 0.0).astype(np.float32)
 
     attempts: list[dict] = []
     best = None

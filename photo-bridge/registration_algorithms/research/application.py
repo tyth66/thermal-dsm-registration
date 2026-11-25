@@ -5,12 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-import numpy as np
-
 from ..application.planimetric import (
-    TilingPlan, adaptive_field_support, adaptive_tiling,
+    TilingPlan, prepare_planimetric_inputs,
 )
-from ..dsm_registration import load_grid, register
+from ..dsm_registration import register
 from ..vertical_estimation import component_shifts
 from .candidate_field import candidate_responsibilities, fit_candidate_field_em
 from .dsm_covariance import dsm_candidate_covariance
@@ -82,17 +80,19 @@ def estimate_research_planimetric(
     """Run DSM loading, all-raw candidate extraction, and joint EM."""
     _validate(inputs)
     resolution = float(inputs.resolution_m)
-    visible_z, visible_valid, thermal_z, thermal_valid, transform, _ = load_grid(
-        inputs.visible_dsm, inputs.thermal_dsm, resolution, inputs.warp_threads)
-    joint = visible_valid & thermal_valid
-    overlap_height_m = joint.shape[0] * resolution
-    overlap_width_m = joint.shape[1] * resolution
-    plan = adaptive_tiling(overlap_width_m, overlap_height_m, resolution,
-                           inputs.tile_m, inputs.step_m)
-    field_support = adaptive_field_support(
-        overlap_width_m, overlap_height_m, inputs.field_max_distance_m)
-    visible_values = np.where(visible_valid, visible_z, 0.0).astype(np.float32)
-    thermal_values = np.where(thermal_valid, thermal_z, 0.0).astype(np.float32)
+    prepared = prepare_planimetric_inputs(
+        inputs.visible_dsm, inputs.thermal_dsm,
+        resolution_m=resolution, tile_m=inputs.tile_m,
+        step_m=inputs.step_m,
+        field_max_distance_m=inputs.field_max_distance_m,
+        warp_threads=inputs.warp_threads)
+    joint = prepared.joint
+    transform = prepared.transform
+    plan = prepared.tiling
+    field_support = prepared.field_support
+    overlap_width_m, overlap_height_m = prepared.overlap_extent_m
+    visible_values = prepared.visible_values
+    thermal_values = prepared.thermal_values
     covariance_fn = (dsm_candidate_covariance
                      if inputs.dsm_covariance else None)
     records, _ = register(
