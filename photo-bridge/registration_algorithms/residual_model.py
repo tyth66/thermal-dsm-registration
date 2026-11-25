@@ -249,7 +249,9 @@ def fit_regularized_field(rows: Iterable[dict], tile_m: float,
 class RegularizedPlanimetricField(PlanimetricField):
     """Global similarity plus a smooth RBF residual that decays off-support."""
 
-    EVALUATION_CHUNK = 250_000
+    # 50k points keeps the per-chunk NxM kernel under ~125 MB at N~300
+    # tile centres; 100k/250k trade peak RSS for a few seconds of latency.
+    EVALUATION_CHUNK = 50_000
 
     def __init__(self, tiles, centers, weights, coefficients,
                  displacement_gradient, translation, center,
@@ -392,7 +394,7 @@ class RegularizedPlanimetricField(PlanimetricField):
         sigma = max(self.tile_m / 2.0, 1e-6)
         total_weight = max(float(self.weights.sum()), 1e-12)
         result = np.empty(len(east), float)
-        chunk = 250_000
+        chunk = self.EVALUATION_CHUNK
         for start in range(0, len(east), chunk):
             stop = start + chunk
             points = np.column_stack([east[start:stop], north[start:stop]])
