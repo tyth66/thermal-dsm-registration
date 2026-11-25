@@ -55,7 +55,7 @@ def elevation_range_for(ds, *, subsample_max_px: int = 256,
     "no accepted DSM tiles" or all panels came back sample_usable=False, and
     nothing in the diagnostics pointed at the elevation window as the cause.
     This helper inspects the raster itself instead: band 1 is subsampled with
-    average resampling and validated against its nearest-resampled mask, and
+    nearest resampling and validated against its nearest-resampled mask, and
     when the valid-elevation median stays inside the legacy interior (both
     edges minus interior_margin_m) the legacy window is returned unchanged,
     bit-for-bit identical to the previous behaviour. Otherwise the window is
@@ -65,7 +65,7 @@ def elevation_range_for(ds, *, subsample_max_px: int = 256,
     subsample_max_px = int(subsample_max_px)
     height = max(1, min(subsample_max_px, int(ds.height)))
     width = max(1, min(subsample_max_px, int(ds.width)))
-    data = ds.read(1, out_shape=(height, width), resampling=Resampling.average)
+    data = ds.read(1, out_shape=(height, width), resampling=Resampling.nearest)
     masks = ds.read_masks(1, out_shape=(height, width),
                           resampling=Resampling.nearest)
     valid = (masks > 0) & np.isfinite(data)
