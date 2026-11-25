@@ -20,14 +20,19 @@ _TANGENTS = np.array([[0.0, 1.0], [0.0, 1.0],
                       [1.0, 0.0], [1.0, 0.0]])
 
 
-def _geometry(east, north, bounds):
+def _side_distances(east, north, bounds):
+    """Perpendicular distance to the left/right/bottom/top edge."""
     west, east_max, south, north_max = (float(value) for value in bounds)
-    distances = np.column_stack([
+    return np.column_stack([
         np.asarray(east, float) - west,
         east_max - np.asarray(east, float),
         np.asarray(north, float) - south,
         north_max - np.asarray(north, float),
     ])
+
+
+def _geometry(east, north, bounds):
+    distances = _side_distances(east, north, bounds)
     side = np.argmin(distances, axis=1)
     inward = distances[np.arange(len(side)), side]
     return side, inward
@@ -158,46 +163,81 @@ def evaluate_boundary_field(field, east, north, bounds, *,
     fits = _fit_local(field, bounds)
     if not fits:
         return base_e, base_n, edge_distance, applied
-    side, inward = _geometry(east, north, bounds)
-    edge_distance = inward
     tile_m = float(getattr(field, "tile_m", DEFAULT_BAND_M))
     range_m = 2.0 * tile_m if band_m is None else float(band_m)
     bin_m = 2.0 * tile_m
     half_window_m = 2.0 * tile_m
     fit_taper_m = 4.0 * tile_m
-    selected = (inward >= 0.0) & (inward < range_m)
-    if not np.any(selected):
+    distances = _side_distances(east, north, bounds)
+    side = np.argmin(distances, axis=1)
+    edge_distance = distances[np.arange(size), side]
+    in_band = (distances >= 0.0) & (distances < range_m)
+    if not np.any(in_band):
         return base_e, base_n, edge_distance, applied
-    # top/bottom use east tangent; left/right use north. Evaluate per side so
-    # each query selects the nearest local bin centre.
+    edge_value = np.exp(-2.0)
+    alpha = np.maximum(
+        0.0, (np.exp(-0.5 * (distances / tile_m) ** 2) - edge_value)
+        / (1.0 - edge_value))
+    # Two edges share a point only where their distances are comparable, so the
+    # inverse-square weights remove the jump at a corner bisector.  The envelope
+    # is the taper of the strongest contributing edge, not a sum of tapers, so
+    # a single-edge correction keeps its previous magnitude.
+    weight = np.zeros(size)
+    envelope = np.zeros(size)
+    correction_e = np.zeros(size)
+    correction_n = np.zeros(size)
     for index in range(4):
-        local = selected & (side == index)
-        if not np.any(local):
+        candidates = sorted((fit for fit in fits if fit["side"] == index),
+                            key=lambda fit: fit["center"])
+        active = np.flatnonzero(in_band[:, index])
+        if not candidates or len(active) == 0:
             continue
-        candidates = [fit for fit in fits if fit["side"] == index]
-        if not candidates:
-            continue
-        centers = np.asarray([fit["center"] for fit in candidates])
-        idx = np.flatnonzero(local)
-        t = (east[idx] if index in (2, 3) else north[idx])
-        nearest_bin = np.argmin(np.abs(centers[None, :] - t[:, None]), axis=1)
-        nearest_center = centers[nearest_bin]
-        within = np.abs(t - nearest_center) <= (bin_m / 2.0 + half_window_m)
+        centers = np.asarray([fit["center"] for fit in candidates], float)
+        coefficients = np.asarray([fit["coefficients"] for fit in candidates],
+                                  float)
+        t = east[active] if index in (2, 3) else north[active]
+        if len(centers) > 1:
+            upper = np.clip(np.searchsorted(centers, t, side="right"), 1,
+                            len(centers) - 1)
+            lower = upper - 1
+            span = centers[upper] - centers[lower]
+            blend = np.divide(t - centers[lower], span,
+                              out=np.zeros(len(t), float), where=span > 0.0)
+            blend = np.clip(blend, 0.0, 1.0)
+        else:
+            lower = upper = np.zeros(len(t), int)
+            blend = np.zeros(len(t), float)
+        within = np.abs(t - np.clip(t, centers[0], centers[-1])) <= (
+            bin_m / 2.0 + half_window_m)
         if not np.any(within):
             continue
-        idx = idx[within]
-        bins = nearest_bin[within]
-        inward_local = inward[idx]
+        active, lower, upper, blend = (active[within], lower[within],
+                                       upper[within], blend[within])
+        inward_local = distances[active, index]
+        count = len(active)
         features = _side_features(inward_local, index, fit_taper_m)
-        raw = np.exp(-0.5 * (inward_local / tile_m) ** 2)
-        edge = np.exp(-2.0)
-        taper = np.maximum(0.0, (raw - edge) / (1.0 - edge))
-        for bin_index in np.unique(bins):
-            group = bins == bin_index
-            coefficients = candidates[int(bin_index)]["coefficients"]
-            count = int(group.sum())
-            correction = features[np.r_[group, group]] @ coefficients
-            base_e[idx[group]] += taper[group] * correction[:count]
-            base_n[idx[group]] += taper[group] * correction[count:]
-            applied[idx[group]] = True
+        east_features = features[:count]
+        north_features = features[count:]
+        lower_coefficients = coefficients[lower]
+        upper_coefficients = coefficients[upper]
+        # east rows only populate columns 0-2, north rows only 3-5, so the full
+        # six-element coefficient vector applies to each half of the design
+        part_e = ((1.0 - blend) * np.einsum(
+            "nk,nk->n", east_features, lower_coefficients)
+            + blend * np.einsum("nk,nk->n", east_features, upper_coefficients))
+        part_n = ((1.0 - blend) * np.einsum(
+            "nk,nk->n", north_features, lower_coefficients)
+            + blend * np.einsum("nk,nk->n", north_features, upper_coefficients))
+        local_weight = 1.0 / np.maximum(inward_local, 1e-6) ** 2
+        weight[active] += local_weight
+        envelope[active] = np.maximum(envelope[active], alpha[active, index])
+        correction_e[active] += local_weight * part_e
+        correction_n[active] += local_weight * part_n
+    corrected = weight > 0.0
+    if not np.any(corrected):
+        return base_e, base_n, edge_distance, applied
+    scale = envelope[corrected] / weight[corrected]
+    base_e[corrected] += scale * correction_e[corrected]
+    base_n[corrected] += scale * correction_n[corrected]
+    applied[corrected] = True
     return base_e, base_n, edge_distance, applied

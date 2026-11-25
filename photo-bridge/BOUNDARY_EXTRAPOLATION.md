@@ -277,6 +277,8 @@ e_n=(d_{\text{pred}}-d_{\text{ref}})\cdot n
 当前实现位于 registration_algorithms/boundary_field.py：
 
 - 边界残差：r_i = d_i - d_c(p_w,i)；
+- bin 间为切向线性混合（2026-11-25），接缝处修正连续；
+- 四角按到边距离平方反比混合相邻两边（2026-11-25），跨角连续；
 - 按边、按切向 bin 拟合局部残差；
 - 每个 bin 6 个系数；
 - 4 条边共用同一套局部模型；
