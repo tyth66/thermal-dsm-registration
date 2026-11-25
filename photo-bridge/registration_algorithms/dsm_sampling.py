@@ -43,7 +43,7 @@ def dsm_pixels(ds, window: Window):
     return data, valid
 
 
-def elevation_range_for(ds, *, subsample_max_px: int = 512,
+def elevation_range_for(ds, *, subsample_max_px: int = 256,
                         interior_margin_m: float = 20.0,
                         half_span_m: float = 90.0) -> tuple[float, float]:
     """Usable elevation window for one DSM, recentred on out-of-band sites.
