@@ -78,6 +78,7 @@ def run_final_pipeline(inputs: FinalPipelineInputs) -> FinalPipelineResult:
         field=field,
         visible_ortho=inputs.visible_ortho,
         thermal_ortho=inputs.thermal_ortho,
+        thermal_dsm=inputs.planimetric.thermal_dsm,
         residual_model_path=Path("in_memory"),
         grid_step=inputs.grid_step,
         grid_mode="summary",

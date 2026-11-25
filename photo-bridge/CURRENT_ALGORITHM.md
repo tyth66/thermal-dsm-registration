@@ -144,6 +144,8 @@ s in [0, 2T]
 
 conservative = source_valid AND field_supported AND target_valid
 
+生产覆盖来自热像 DSM 的原生网格。原始五点中至少一点有有效高程时，组件纳入映射结果。修正后覆盖和场支持用于诊断，输出仍采用热像正射像素坐标。
+
 ## 6. 验收结果
 
 边界修正前后 signed normal residual：

@@ -6,7 +6,10 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 
 from registration_algorithms.application import (
     FieldSupportPlan, FinalPipelineInputs, TilingPlan,
@@ -91,7 +94,7 @@ def test_final_pipeline_runs_two_stages_in_memory(monkeypatch, tmp_path):
     output = tmp_path / "final.json"
     result = module.run_final_pipeline(FinalPipelineInputs(
         world={"panels": [{"panel_id": "p0"}]},
-        planimetric=object(),
+        planimetric=SimpleNamespace(thermal_dsm=tmp_path / "thermal_dsm.tif"),
         visible_ortho=tmp_path / "visible_ortho.tif",
         thermal_ortho=tmp_path / "thermal_ortho.tif",
         output_json=output,
@@ -103,9 +106,9 @@ def test_final_pipeline_runs_two_stages_in_memory(monkeypatch, tmp_path):
         "planimetric_residual", "visible_to_thermal_mapping",
     ]
     assert all(stage.get("in_memory") for stage in result.stages)
-    # Mapping consumes the planimetric field directly; no vertical/canonical
-    # stage and no DSM path plumbing survives on the final-pipeline inputs.
+    # Mapping reuses the planimetric DSM path for coverage.
     assert captured["mapping"].field is estimation.field
+    assert captured["mapping"].thermal_dsm == tmp_path / "thermal_dsm.tif"
     assert captured["mapping"].grid_mode == "summary"
     assert not hasattr(captured["mapping"], "canonical")
     assert not hasattr(module.FinalPipelineInputs(
@@ -127,7 +130,7 @@ def test_final_pipeline_payload_carries_planimetric_provenance(monkeypatch,
     monkeypatch.setattr(module, "compute_mapping", lambda inputs: computation)
     output = tmp_path / "final.json"
     result = module.run_final_pipeline(FinalPipelineInputs(
-        world={"panels": []}, planimetric=object(),
+        world={"panels": []}, planimetric=SimpleNamespace(thermal_dsm=tmp_path / "dsm.tif"),
         visible_ortho=tmp_path / "v.tif", thermal_ortho=tmp_path / "t.tif",
         output_json=output))
 
@@ -149,3 +152,55 @@ def test_final_pipeline_payload_carries_planimetric_provenance(monkeypatch,
     assert provenance["kernel_length_m"] == pytest.approx(80.0)
     assert provenance["ridge"] == pytest.approx(0.1)
     assert result.summary["planimetric"] == provenance
+
+
+def test_production_coverage_uses_thermal_dsm_on_its_native_grid(monkeypatch, tmp_path):
+    visible_ortho = tmp_path / "visible.tif"
+    thermal_ortho = tmp_path / "thermal.tif"
+    thermal_dsm = tmp_path / "dsm.tif"
+    profile = {"driver": "GTiff", "count": 1, "crs": "EPSG:32649"}
+    for ortho in (visible_ortho, thermal_ortho):
+        with rasterio.open(ortho, "w", **profile, width=20, height=12,
+                           dtype="uint8", transform=from_origin(0, 12, 1, 1)) as ds:
+            ds.write(np.zeros((12, 20), np.uint8), 1)
+
+    elevations = np.full((6, 8), -99, np.float32)
+    elevations[1, 1] = -2.0  # The only valid original point on the first panel.
+    elevations[0, 0] = np.nan
+    elevations[0, 2] = np.inf
+    elevations[2, 0] = 8.0  # Explicitly invalidated by the dataset mask below.
+    elevations[1, 5] = 12.0  # Reached only after shifting the second panel.
+    mask = np.full(elevations.shape, 255, np.uint8)
+    mask[2, 0] = 0
+    with rasterio.open(thermal_dsm, "w", **profile, width=8, height=6,
+                       dtype="float32", transform=from_origin(0, 12, 2, 2), nodata=-99) as ds:
+        ds.write(elevations, 1)
+        ds.write_mask(mask)
+
+    world = {"panels": [{
+        "panel_id": panel_id,
+        "center_xyz": [x, 9.0, 0],
+        "corners_xyz": [[x + dx, y, 0] for dx, y in (
+            (-1.5, 10.5), (1.5, 10.5), (1.5, 7.5), (-1.5, 7.5))],
+    } for panel_id, x in (("partial", 3.0), ("shifted", 9.0), ("outside", 18.0))]}
+    estimation = _planimetric_result()
+    estimation.field.max_distance_m = 30.0
+    estimation.field.evaluate = lambda east, north: (
+        np.full(len(east), 2.0), np.zeros(len(east)), np.ones(len(east)), np.zeros(len(east)))
+    monkeypatch.setattr(module, "estimate_planimetric", lambda inputs: estimation)
+    output = tmp_path / "final.json"
+    result = module.run_final_pipeline(FinalPipelineInputs(
+        world=world, planimetric=SimpleNamespace(thermal_dsm=thermal_dsm),
+        visible_ortho=visible_ortho, thermal_ortho=thermal_ortho, output_json=output,
+        grid_step=2))
+
+    payload = json.loads(output.read_text())
+    assert [panel["panel_id"] for panel in payload["panels"]] == ["partial"]
+    partial = payload["panels"][0]
+    assert (partial["center"]["thermal_u"], partial["center"]["thermal_v"]) == (5.0, 3.0)
+    assert partial["center"]["naive_valid"] == 1
+    assert partial["center"]["corrected_valid"] == 0
+    assert all(corner["naive_valid"] == 0 for corner in partial["corners"])
+    assert result.summary["panel_points_corrected_valid"] == 1
+    assert payload["summary"]["panel_ids_excluded_original_nodata"] == 2
+    assert "valid thermal DSM elevation" in payload["summary"]["mapping_policy"]

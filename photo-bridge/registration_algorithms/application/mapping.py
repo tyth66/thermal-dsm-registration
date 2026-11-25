@@ -12,7 +12,9 @@ from typing import Any, Mapping
 
 import numpy as np
 import rasterio
+from rasterio.windows import Window
 
+from ..dsm_sampling import dsm_pixels
 from ..forward_mapping import grid_mapping, panel_points
 from ..io_utils import stats
 from ..residual_model import PlanimetricField
@@ -29,6 +31,7 @@ class MappingInputs:
     field_max_distance_m: float | None = None
     field_chunk_workers: int = 2
     grid_mode: str = "full"
+    thermal_dsm: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,18 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
     field = inputs.field
     with (rasterio.open(inputs.visible_ortho) as visible_ortho,
           rasterio.open(inputs.thermal_ortho) as thermal_ortho):
-        thermal_alpha = thermal_ortho.read(4)
+        coverage_transform = None
+        mapping_policy = MAPPING_POLICY
+        if inputs.thermal_dsm is None:
+            thermal_coverage = thermal_ortho.read(4)
+        else:
+            with rasterio.open(inputs.thermal_dsm) as thermal_dsm:
+                if thermal_dsm.crs is None or thermal_dsm.crs != thermal_ortho.crs:
+                    raise ValueError("thermal DSM and thermal orthophoto must share a CRS")
+                window = Window(0, 0, thermal_dsm.width, thermal_dsm.height)
+                thermal_coverage = dsm_pixels(thermal_dsm, window)[1]
+                coverage_transform = thermal_dsm.transform
+            mapping_policy = DSM_MAPPING_POLICY
         thermal_transform = thermal_ortho.transform
         thermal_bounds = (
             thermal_transform.c,
@@ -66,17 +80,18 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         panel_rows = panel_points(
             inputs.visible_world, field, visible_ortho.transform,
             thermal_transform, thermal_ortho.width, thermal_ortho.height,
-            thermal_alpha, inputs.field_max_distance_m,
+            thermal_coverage, inputs.field_max_distance_m,
             boundary=thermal_bounds,
-            field_chunk_workers=inputs.field_chunk_workers)
+            field_chunk_workers=inputs.field_chunk_workers,
+            coverage_transform=coverage_transform)
         grid = grid_mapping(
             inputs.visible_world, field, visible_ortho.transform,
             visible_ortho.width, visible_ortho.height,
             thermal_transform, thermal_ortho.width, thermal_ortho.height,
-            thermal_alpha, inputs.grid_step,
+            thermal_coverage, inputs.grid_step,
             inputs.field_max_distance_m, boundary=thermal_bounds,
             field_chunk_workers=inputs.field_chunk_workers,
-            grid_mode=inputs.grid_mode)
+            grid_mode=inputs.grid_mode, coverage_transform=coverage_transform)
         thermal_resolution = abs(thermal_ortho.transform.a)
     row_count = len(panel_rows)
     panel_order = [panel["panel_id"] for panel in inputs.visible_world["panels"]]
@@ -139,7 +154,7 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
         "grid_edge_tail_points": int(np.count_nonzero(grid.get("edge_tail_applied", []))),
         "field_max_distance_m": (field.max_distance_m if inputs.field_max_distance_m is None
                                  else inputs.field_max_distance_m),
-        "mapping_policy": MAPPING_POLICY,
+        "mapping_policy": mapping_policy,
         "diagnostics_only": ["field_valid", "corrected_valid", "target_nodata"],
         "vertical_model_removed": True,
         "grid_naive_valid_fraction": float(grid["naive_valid"].mean()),
@@ -171,6 +186,10 @@ def compute_mapping(inputs: MappingInputs) -> MappingComputation:
 
 MAPPING_POLICY = (
     "only components with thermal alpha > 0 at any of their five original "
+    "positions participate in the mapping; components whose five original "
+    "positions are all nodata are excluded from the delivered payload")
+DSM_MAPPING_POLICY = (
+    "only components with valid thermal DSM elevation at any of their five original "
     "positions participate in the mapping; components whose five original "
     "positions are all nodata are excluded from the delivered payload")
 
@@ -217,7 +236,7 @@ def mapping_result_payload(computation: MappingComputation,
     # and the mapping policy are added here.
     summary = dict(computation.summary)
     summary["panel_ids_excluded_original_nodata"] = excluded
-    summary["mapping_policy"] = MAPPING_POLICY
+    summary.setdefault("mapping_policy", MAPPING_POLICY)
     return {
         "schema": schema,
         "method": computation.summary["method"],

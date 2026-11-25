@@ -85,7 +85,7 @@ DSM 不同：它是摄影测量重建出的**几何表面**，单位是米。可
 输入：
 
 - 可见光 DSM、热像 DSM；
-- 可见光正射、热像正射（热像只用第 4 波段 alpha 做覆盖判断）；
+- 可见光正射和热像正射的坐标帧；
 - 可见光组件世界模型：每个面板的中心、四角、阵列编号。
 
 输出：
@@ -559,18 +559,18 @@ q_j = p_j + δ̄_P
 ```
 
 5. 用热像仿射逆变换把 q_j 转成像素 (u,v)；
-6. 在热像 alpha 上采样，得到目标有效性；
+6. 在热像 DSM 原生网格中读取原始位置和修正后位置所在的像元；
 7. 计算三态：
 
 ```text
-S_j = [alpha_t(u_j^0, v_j^0) > 0]        # 源：原始位置有热像数据
+S_j = dsm_valid(p_j)                   # 原始位置有有效高程
 F_j = field_supported(p_j)               # 场：位移有限、有支撑、距离 ≤2T
-T_j = [alpha_t(u_j, v_j) > 0]            # 目标：修正后位置有热像数据
+T_j = dsm_valid(q_j)                   # 修正后位置有有效高程
 conservative_j = S_j ∧ F_j ∧ T_j
 component_conservative = center_conservative ∧ (Σ corner_conservative ≥ 2)
 ```
 
-8. `valid`（兼容字段）= 组件源覆盖：只要 5 个原始点中任意一个有 alpha，整个组件的 5 个点都标 valid；它不是交付验收口径。
+8. `valid` 表示组件源覆盖。只要 5 个原始点中任意一个具有有效 DSM 高程，整个组件的 5 个点都标为 `valid`。修正后有效性与场支持用于诊断。
 
 **为什么是 rigid 平移，而不是逐点独立映射**
 
@@ -826,7 +826,7 @@ run296 的 8295 个组件中，8293 个 conservative，56 个点因目标 nodata
 
 ### 5.7 `valid` 兼容字段容易被误用
 
-**证据**：run296 41475 个点全部 `valid=1`；`valid = component_source`，只表示原始位置有 alpha。
+**历史证据**：run296 的 Alpha 版结果中，41,475 个点全部为 `valid=1`。这个字段按组件记录原始位置的覆盖。
 
 **影响**：如果下游用 `valid` 而不是 `conservative_valid`，会得到“全部通过”的错误安全感。
 

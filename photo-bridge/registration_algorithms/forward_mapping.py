@@ -1,6 +1,6 @@
 """Core visible-ortho to thermal-ortho forward position mapping.
 
-A component maps when any of its five original thermal positions has image
+A component maps when any of its five original thermal positions has coverage
 data. Coverage at corrected positions and planimetric support are diagnostics.
 The mapping is positions-only: the vertical (z) surface model was removed
 because it never influenced the thermal pixel position.
@@ -32,15 +32,24 @@ def _pixels(inverse, east, north):
     return col, row
 
 
-def _alpha_at(u, v, width, height, alpha):
-    if not (np.isfinite(u) and np.isfinite(v)
-            and 0 <= u < width and 0 <= v < height):
-        return None
-    # Alpha is sampled at full thermal resolution; clamp to the raster bounds so
-    # a coordinate near the far edge still reads the last pixel.
-    row = min(max(int(v), 0), alpha.shape[0] - 1)
-    col = min(max(int(u), 0), alpha.shape[1] - 1)
-    return int(alpha[row, col])
+def _coverage_sampler(values, thermal_transform, width, height, coverage_transform):
+    if coverage_transform is not None:
+        height, width = values.shape
+        inverse = ~coverage_transform
+    else:
+        inverse = ~thermal_transform
+
+    def sample(east, north):
+        u, v = _pixels(inverse, east, north)
+        inside = (np.isfinite(u) & np.isfinite(v) & (u >= 0) & (u < width)
+                  & (v >= 0) & (v < height))
+        result = np.zeros(len(u), dtype=values.dtype)
+        rows = np.minimum(v[inside].astype(int), values.shape[0] - 1)
+        cols = np.minimum(u[inside].astype(int), values.shape[1] - 1)
+        result[inside] = values[rows, cols]
+        return result
+
+    return sample
 
 
 def _component_conservative(panel_rows):
@@ -56,9 +65,10 @@ def _component_conservative(panel_rows):
 def panel_points(visible_world: dict, field: PlanimetricField,
                  visible_transform, thermal_transform,
                  thermal_width: int, thermal_height: int,
-                 thermal_alpha: np.ndarray,
+                 thermal_coverage: np.ndarray,
                  field_max_distance: float | None = None,
-                 boundary=None, field_chunk_workers: int = 1) -> list[dict]:
+                 boundary=None, field_chunk_workers: int = 1, *,
+                 coverage_transform=None) -> list[dict]:
     visible_inverse = ~visible_transform
     thermal_inverse = ~thermal_transform
     entries = []
@@ -101,21 +111,17 @@ def panel_points(visible_world: dict, field: PlanimetricField,
         applied_delta_e[start:end] = shift_e
         applied_delta_n[start:end] = shift_n
     corrected_u, corrected_v = _pixels(thermal_inverse, east_t, north_t)
-    naive_alpha = np.asarray([
-        _alpha_at(naive_u[i], naive_v[i], thermal_width, thermal_height,
-                  thermal_alpha) or 0 for i in range(len(entries))],
-        dtype=np.int16)
-    corrected_alpha = np.asarray([
-        _alpha_at(corrected_u[i], corrected_v[i], thermal_width, thermal_height,
-                  thermal_alpha) or 0 for i in range(len(entries))],
-        dtype=np.int16)
-    naive_valid = naive_alpha > 0
-    corrected_valid = corrected_alpha > 0
+    sample = _coverage_sampler(thermal_coverage, thermal_transform, thermal_width,
+                               thermal_height, coverage_transform)
+    naive_coverage = sample(east, north)
+    corrected_coverage = sample(east_t, north_t)
+    naive_valid = naive_coverage > 0
+    corrected_valid = corrected_coverage > 0
     rows = []
     for panel_id, start, end in groups:
         panel_rows = []
         for i in range(start, end):
-            panel_rows.append({
+            row = {
                 "panel_id": panel_id, "point": entries[i]["point_name"],
                 "visible_u": float(visible_u[i]), "visible_v": float(visible_v[i]),
                 "east_visible": float(east[i]), "north_visible": float(north[i]),
@@ -126,9 +132,7 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                 "field_shift_px": float(np.hypot(corrected_u[i] - naive_u[i],
                                                  corrected_v[i] - naive_v[i])),
                 "valid": 0,
-                "naive_alpha": int(naive_alpha[i]),
                 "naive_valid": int(naive_valid[i]),
-                "thermal_alpha": int(corrected_alpha[i]),
                 "corrected_valid": int(corrected_valid[i]),
                 "field_valid": int(bool(field_valid[i])),
                 "source_valid": int(naive_valid[i]),
@@ -139,7 +143,11 @@ def panel_points(visible_world: dict, field: PlanimetricField,
                 "support_confidence": float(support_confidence[i]),
                 "edge_distance_m": float(edge_distance[i]),
                 "edge_tail_applied": int(bool(edge_tail_applied[i])),
-            })
+            }
+            if coverage_transform is None:
+                row["naive_alpha"] = int(naive_coverage[i])
+                row["thermal_alpha"] = int(corrected_coverage[i])
+            panel_rows.append(row)
         component_mapped = bool(np.any(naive_valid[start:end]))
         center_row = next((row for row in panel_rows if row["point"] == "center"),
                           panel_rows[0])
@@ -165,10 +173,19 @@ def panel_points(visible_world: dict, field: PlanimetricField,
     return rows
 
 
+def _panels_covered(panels, sample):
+    coverage_points = [_panel_points(panel) for panel in panels]
+    point_counts = {len(points) for points in coverage_points}
+    if point_counts - {5}:
+        raise ValueError("panel point count is not five: %s" % sorted(point_counts))
+    east = np.asarray([point[1][0] for points in coverage_points for point in points], float)
+    north = np.asarray([point[1][1] for points in coverage_points for point in points], float)
+    return (sample(east, north) > 0).reshape(-1, 5).any(axis=1)
+
+
 def _grid_summary(visible_world: dict, field: PlanimetricField,
                   visible_transform, visible_width: int, visible_height: int,
-                  thermal_transform, thermal_width: int, thermal_height: int,
-                  thermal_alpha: np.ndarray, step: int,
+                  sample, step: int,
                   field_max_distance: float | None,
                   boundary, field_chunk_workers: int) -> dict:
     grid_height = visible_height // step
@@ -177,7 +194,6 @@ def _grid_summary(visible_world: dict, field: PlanimetricField,
         raise ValueError("grid step exceeds visible raster dimensions")
     columns = (np.arange(grid_width) + 0.5) * step
     inverse = ~visible_transform
-    thermal_inverse = ~thermal_transform
     panel_ids = [panel["panel_id"] for panel in visible_world["panels"]]
     panel_index = {panel_id: index + 1 for index, panel_id in enumerate(panel_ids)}
     mask = np.zeros((grid_height, grid_width), np.uint16)
@@ -187,26 +203,7 @@ def _grid_summary(visible_world: dict, field: PlanimetricField,
         col, row = inverse @ (corners[:, 0], corners[:, 1])
         polygon = np.column_stack([col / step, row / step]).astype(np.int32)
         cv2.fillPoly(mask, [polygon], panel_index[panel_id])
-    coverage_points = [_panel_points(panel) for panel in visible_world["panels"]]
-    point_counts = {len(points) for points in coverage_points}
-    if point_counts - {5}:
-        raise ValueError("panel point count is not five: %s" % sorted(point_counts))
-    point_east = np.asarray([point[1][0] for points in coverage_points for point in points], float)
-    point_north = np.asarray([point[1][1] for points in coverage_points for point in points], float)
-    with np.errstate(invalid="ignore", over="ignore"):
-        point_u, point_v = thermal_inverse @ (point_east, point_north)
-
-    def alpha_sample(u, v):
-        inside = (np.isfinite(u) & np.isfinite(v) & (u >= 0) & (u < thermal_width)
-                  & (v >= 0) & (v < thermal_height))
-        alpha = np.zeros(len(u), np.uint8)
-        rows_idx = np.clip(v[inside].astype(int), 0, thermal_alpha.shape[0] - 1)
-        cols_idx = np.clip(u[inside].astype(int), 0, thermal_alpha.shape[1] - 1)
-        alpha[inside] = thermal_alpha[rows_idx, cols_idx]
-        return inside, alpha
-
-    point_inside, point_alpha = alpha_sample(point_u, point_v)
-    covered = (point_inside & (point_alpha > 0)).reshape(-1, 5).any(axis=1)
+    covered = _panels_covered(visible_world["panels"], sample)
     chunk_rows = max(1, 100_000 // grid_width)
     fields = {name: [] for name in (
         "delta_e", "delta_n", "valid", "naive_valid", "corrected_valid",
@@ -224,13 +221,8 @@ def _grid_summary(visible_world: dict, field: PlanimetricField,
                 field, east, north, boundary, base_e=delta_e, base_n=delta_n)
         east_t = east + delta_e
         north_t = north + delta_n
-        with np.errstate(invalid="ignore", over="ignore"):
-            naive_u, naive_v = thermal_inverse @ (east, north)
-            corrected_u, corrected_v = thermal_inverse @ (east_t, north_t)
-        naive_inside, naive_alpha = alpha_sample(naive_u, naive_v)
-        corrected_inside, corrected_alpha = alpha_sample(corrected_u, corrected_v)
-        naive_valid = naive_inside & (naive_alpha > 0)
-        corrected_valid = corrected_inside & (corrected_alpha > 0)
+        naive_valid = sample(east, north) > 0
+        corrected_valid = sample(east_t, north_t) > 0
         field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                         field_max_distance)
         if not np.all(np.isfinite(delta_e) & np.isfinite(delta_n)):
@@ -257,16 +249,17 @@ def _grid_summary(visible_world: dict, field: PlanimetricField,
 def grid_mapping(visible_world: dict, field: PlanimetricField,
                  visible_transform, visible_width: int, visible_height: int,
                  thermal_transform, thermal_width: int, thermal_height: int,
-                 thermal_alpha: np.ndarray, step: int,
+                 thermal_coverage: np.ndarray, step: int,
                  field_max_distance: float | None = None,
                  boundary=None, field_chunk_workers: int = 1,
-                 grid_mode: str = "full") -> dict:
+                 grid_mode: str = "full", *, coverage_transform=None) -> dict:
     if grid_mode not in ("full", "compact", "summary"):
         raise ValueError("unsupported grid mode: %s" % grid_mode)
+    sample = _coverage_sampler(thermal_coverage, thermal_transform, thermal_width,
+                               thermal_height, coverage_transform)
     if grid_mode == "summary":
         return _grid_summary(visible_world, field, visible_transform,
-                             visible_width, visible_height, thermal_transform,
-                             thermal_width, thermal_height, thermal_alpha, step,
+                             visible_width, visible_height, sample, step,
                              field_max_distance, boundary, field_chunk_workers)
     grid_height = visible_height // step
     grid_width = visible_width // step
@@ -301,17 +294,7 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
     with np.errstate(invalid="ignore", over="ignore"):
         naive_u, naive_v = thermal_inverse @ (east, north)
 
-    def alpha_sample(u, v):
-        valid = (np.isfinite(u) & np.isfinite(v) & (u >= 0) & (u < thermal_width)
-                 & (v >= 0) & (v < thermal_height))
-        alpha = np.zeros(len(u), np.uint8)
-        rows_idx = np.clip(v[valid].astype(int), 0, thermal_alpha.shape[0] - 1)
-        cols_idx = np.clip(u[valid].astype(int), 0, thermal_alpha.shape[1] - 1)
-        alpha[valid] = thermal_alpha[rows_idx, cols_idx]
-        return valid, alpha
-
-    naive_inside, naive_alpha = alpha_sample(naive_u, naive_v)
-    naive_valid = naive_inside & (naive_alpha > 0)
+    naive_valid = sample(east, north) > 0
     field_valid = _field_valid_mask(delta_e, delta_n, weight, nearest, field,
                                     field_max_distance)
     use_corrected = np.isfinite(delta_e) & np.isfinite(delta_n)
@@ -323,22 +306,10 @@ def grid_mapping(visible_world: dict, field: PlanimetricField,
 
     with np.errstate(invalid="ignore", over="ignore"):
         corrected_u, corrected_v = thermal_inverse @ (east_t_global, north_t_global)
-    corrected_inside, corrected_alpha = alpha_sample(corrected_u, corrected_v)
-    corrected_valid = corrected_inside & (corrected_alpha > 0)
+    corrected_valid = sample(east_t_global, north_t_global) > 0
     target_nodata = ~corrected_valid
     valid = naive_valid.copy()
-    coverage_points = [_panel_points(panel) for panel in visible_world["panels"]]
-    point_counts = {len(points) for points in coverage_points}
-    if point_counts - {5}:
-        # The world model emits center + four corners by construction; any other
-        # count means the component coverage rule cannot be applied to the panel.
-        raise ValueError("panel point count is not five: %s" % sorted(point_counts))
-    point_east = np.asarray([point[1][0] for points in coverage_points for point in points], float)
-    point_north = np.asarray([point[1][1] for points in coverage_points for point in points], float)
-    with np.errstate(invalid="ignore", over="ignore"):
-        point_u, point_v = thermal_inverse @ (point_east, point_north)
-    point_inside, point_alpha = alpha_sample(point_u, point_v)
-    covered = (point_inside & (point_alpha > 0)).reshape(-1, 5).any(axis=1)
+    covered = _panels_covered(visible_world["panels"], sample)
     valid[index > 0] = covered[index[index > 0] - 1]
 
     return {
