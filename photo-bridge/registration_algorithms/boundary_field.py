@@ -33,7 +33,24 @@ def _geometry(east, north, bounds):
     return side, inward
 
 
+def _side_features(inward, index, taper_m):
+    inward = np.asarray(inward, float)
+    phi = np.maximum(0.0, 1.0 - inward / float(taper_m)) ** 2
+    size = len(inward)
+    design = np.zeros((2 * size, 6), float)
+    normal = _NORMALS[index]
+    tangent = _TANGENTS[index]
+    design[:size, 0] = phi * normal[0]
+    design[:size, 1] = phi * tangent[0]
+    design[:size, 2] = phi * inward * normal[0]
+    design[size:, 3] = phi * normal[1]
+    design[size:, 4] = phi * tangent[1]
+    design[size:, 5] = phi * inward * normal[1]
+    return design
+
+
 def _features(east, north, bounds, side, inward, taper_m):
+    side = np.asarray(side, int)
     phi = np.maximum(0.0, 1.0 - inward / float(taper_m)) ** 2
     size = len(np.asarray(east))
     design = np.zeros((2 * size, 6), float)
@@ -151,7 +168,6 @@ def evaluate_boundary_field(field, east, north, bounds, *,
     selected = (inward >= 0.0) & (inward < range_m)
     if not np.any(selected):
         return base_e, base_n, edge_distance, applied
-    tangent = east if size else east
     # top/bottom use east tangent; left/right use north. Evaluate per side so
     # each query selects the nearest local bin centre.
     for index in range(4):
@@ -165,21 +181,23 @@ def evaluate_boundary_field(field, east, north, bounds, *,
         idx = np.flatnonzero(local)
         t = (east[idx] if index in (2, 3) else north[idx])
         nearest_bin = np.argmin(np.abs(centers[None, :] - t[:, None]), axis=1)
-        for position, (local_index, bin_index) in enumerate(zip(idx, nearest_bin)):
-            fit = candidates[int(bin_index)]
-            if abs(t[position] - fit["center"]) > (
-                    bin_m / 2.0 + half_window_m):
-                continue
-            feature = _features(
-                np.array([east[local_index]]), np.array([north[local_index]]),
-                bounds, np.array([index]), np.array([inward[local_index]]),
-                fit_taper_m)
-            correction = (feature @ fit["coefficients"]).reshape(2)
-            # Gaussian with sigma = T, truncated and normalized to zero at 2T.
-            raw = np.exp(-0.5 * (inward[local_index] / tile_m) ** 2)
-            edge = np.exp(-2.0)
-            taper = max(0.0, (raw - edge) / (1.0 - edge))
-            base_e[local_index] += taper * correction[0]
-            base_n[local_index] += taper * correction[1]
-            applied[local_index] = True
+        nearest_center = centers[nearest_bin]
+        within = np.abs(t - nearest_center) <= (bin_m / 2.0 + half_window_m)
+        if not np.any(within):
+            continue
+        idx = idx[within]
+        bins = nearest_bin[within]
+        inward_local = inward[idx]
+        features = _side_features(inward_local, index, fit_taper_m)
+        raw = np.exp(-0.5 * (inward_local / tile_m) ** 2)
+        edge = np.exp(-2.0)
+        taper = np.maximum(0.0, (raw - edge) / (1.0 - edge))
+        for bin_index in np.unique(bins):
+            group = bins == bin_index
+            coefficients = candidates[int(bin_index)]["coefficients"]
+            count = int(group.sum())
+            correction = features[np.r_[group, group]] @ coefficients
+            base_e[idx[group]] += taper[group] * correction[:count]
+            base_n[idx[group]] += taper[group] * correction[count:]
+            applied[idx[group]] = True
     return base_e, base_n, edge_distance, applied

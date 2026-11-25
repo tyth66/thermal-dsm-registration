@@ -23,19 +23,27 @@ PEAK_COVARIANCE_RATIO_MIN = 0.05
 PEAK_COVARIANCE_RATIO_MAX = 10.0
 
 
-def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Linear cross-correlation: C[s] = sum_x a(x) * b(x + s).
-
-    The result is fftshifted so the zero shift sits at (H, W).
-    """
+def _corr_raw(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Linear cross-correlation with zero lag at index (0, 0)."""
     a = np.asarray(a, float)
     b = np.asarray(b, float)
     height, width = a.shape
     shape = (2 * height, 2 * width)
     fa = np.fft.rfft2(a, s=shape)
     fb = np.fft.rfft2(b, s=shape)
-    correlation = np.fft.irfft2(np.conj(fa) * fb, s=shape)
-    return np.fft.fftshift(correlation)
+    return np.fft.irfft2(np.conj(fa) * fb, s=shape)
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Linear cross-correlation with zero lag at the array centre."""
+    return np.fft.fftshift(_corr_raw(a, b))
+
+
+def _lag_window(raw: np.ndarray, limit: int) -> np.ndarray:
+    """Extract lags -limit..limit without fftshifting the full array."""
+    rows = np.arange(-limit, limit + 1) % raw.shape[0]
+    columns = np.arange(-limit, limit + 1) % raw.shape[1]
+    return raw[np.ix_(rows, columns)]
 
 
 def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
@@ -55,29 +63,19 @@ def masked_ecc_surface(visible: np.ndarray, thermal: np.ndarray,
     v = np.where(joint, visible, 0.0)
     t = np.where(joint, thermal, 0.0)
 
-    c_m = _corr(mask, mask)
-    c_v = _corr(mask * v, mask)
-    c_t = _corr(mask, mask * t)
-    c_vv = _corr(mask * v * v, mask)
-    c_tt = _corr(mask, mask * t * t)
-    c_vt = _corr(mask * v, mask * t)
-
     if max_shift_px is None:
         max_shift_px = min(height, width) // 2
     limit = max(0, min(int(max_shift_px), height - 1, width - 1))
     shifts = np.arange(-limit, limit + 1)
-    sl = (slice(height - limit, height + limit + 1),
-          slice(width - limit, width + limit + 1))
-    m = c_m[sl]
-    v_sum = c_v[sl]
-    t_sum = c_t[sl]
-    vv_sum = c_vv[sl]
-    tt_sum = c_tt[sl]
-    vt_sum = c_vt[sl]
-
-    # At least half of the zero-shift common area must remain visible; for a
-    # fully valid tile this is the 0.5*|T| contract in the plan.
-    zero_shift_area = float(c_m[height, width])
+    raw = _corr_raw(mask, mask)
+    zero_shift_area = float(raw[0, 0])
+    m = _lag_window(raw, limit)
+    del raw
+    v_sum = _lag_window(_corr_raw(mask * v, mask), limit)
+    t_sum = _lag_window(_corr_raw(mask, mask * t), limit)
+    vv_sum = _lag_window(_corr_raw(mask * v * v, mask), limit)
+    tt_sum = _lag_window(_corr_raw(mask, mask * t * t), limit)
+    vt_sum = _lag_window(_corr_raw(mask * v, mask * t), limit)
     valid = m > 0.0
     if zero_shift_area > 0:
         valid &= m >= 0.5 * zero_shift_area
